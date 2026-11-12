@@ -4,6 +4,7 @@
 
 Fails (exit 1) when, on the cases both runs share:
   * any case's circuit is no longer equivalent to its network, or
+  * a case that the base proved formally equivalent is no longer proven, or
   * the total LUT count grows, or
   * the worst-case depth grows.
 
@@ -24,11 +25,19 @@ def main(base_path: str, head_path: str) -> int:
     shared = sorted(base.keys() & head.keys())
     failures = [f"{c}: circuit is not equivalent" for c in head if not head[c]["equivalent"]]
 
-    print("| case | LUTs base -> head | depth base -> head |")
-    print("|---|---:|---:|")
+    def proven(r: dict) -> str:
+        return "yes" if r.get("proven") else "no"
+
+    print("| case | LUTs base -> head | depth base -> head | proven base -> head |")
+    print("|---|---:|---:|---|")
     for c in shared:
         b, h = base[c], head[c]
-        print(f"| {c} | {b['lut_count']} -> {h['lut_count']} | {b['depth']} -> {h['depth']} |")
+        print(
+            f"| {c} | {b['lut_count']} -> {h['lut_count']} | {b['depth']} -> {h['depth']} |"
+            f" {proven(b)} -> {proven(h)} |"
+        )
+        if b.get("proven") and not h.get("proven"):
+            failures.append(f"{c}: no longer formally proven equivalent")
 
     if shared:
         base_luts = sum(base[c]["lut_count"] for c in shared)

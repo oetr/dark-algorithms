@@ -51,9 +51,20 @@ disappears from the circuit. The sparser the network, the smaller the circuit ca
    chain, so neurons off the critical path can be deeper and smaller. Identical LUTs are
    shared and unused ones removed.
 
-**How correctness is checked.** Every circuit is simulated and its outputs compared with the
-original network: on every possible input for networks with up to 16 inputs, and on
-thousands of random inputs for larger ones. Any mismatch blocks the change.
+**How correctness is checked.** Every circuit is proven to compute exactly the original
+network on every possible input, not just on samples. The proof goes one layer at a time:
+taking the previous layer's outputs as given, each neuron's part of the circuit must equal
+its threshold function for every combination of its inputs. Two steps make this fast even
+for neurons with 77 inputs. First, each group of LUTs that counts some bits is checked on
+all of its at most 64 input combinations to re-encode exactly the weighted sum of the bits
+it replaces, so the neuron's sum can be rewritten step by step in terms of the counters'
+outputs without trusting how the compiler built them. Second, the remaining comparison
+logic is checked against "sum at least threshold" over every combination of those
+outputs with a binary decision diagram, a canonical form in which two functions are
+equal exactly when their diagrams are identical. Every benchmark network is proven this way
+in about two seconds in total. A circuit that is no longer proven, or that disagrees with
+the network in simulation (every input for networks with up to 16 inputs, thousands of
+random inputs for larger ones), blocks the change.
 
 **What it is measured on.** Fully connected networks with two or three layers, 16 to 256
 inputs, 50% to 95% zero weights, and LUTs with 4 or 6 inputs. Each change is also compared
@@ -86,8 +97,7 @@ every network:
 | **Total** | **18,777** | **32,110** | **−41.5%** | |
 
 Real chips also have fast adder circuitry (carry chains) that this comparison does not use
-yet, and correctness of the largest networks is still checked by sampling rather than proven.
-Both are the next steps.
+yet; adding a comparison on such a target is the next step.
 
 **Ideas ahead.** Choosing the shared input groups better (covering every neuron's inputs as
 completely as possible, and sharing the later counting steps too), counting only as much as

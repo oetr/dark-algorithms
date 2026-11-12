@@ -16,17 +16,19 @@ we beat it). The stored Yosys results are in `benchmarks/yosys_baseline.json`.
 
 ### Current priorities
 
-1. **Prove correctness formally.** Wide networks are checked on random vectors only. Use
-   Yosys (equivalence checking or SAT) or ABC `cec` to prove each compiled circuit equals the
-   behavioral Verilog from `benchmarks/yosys_baseline.py`, time-boxed per case, and report
-   which cases are proven.
-2. **Add a real-FPGA reference.** LUT-only counts ignore carry chains. Add a second baseline
+1. **Add a real-FPGA reference.** LUT-only counts ignore carry chains. Add a second baseline
    with a vendor-style target (for example Yosys `synth_xilinx` or `synth_ecp5`, counting LUTs
    and carry cells) and compare our circuits handed to the same flow.
-3. Then keep shrinking LUTs and depth, reporting the gap to Yosys/ABC in every pull request.
+2. Then keep shrinking LUTs and depth, reporting the gap to Yosys/ABC in every pull request.
+
+Every benchmark circuit is formally proven equivalent to its network (`prove.py`, reported
+as `proven` per case); the regression gate fails when a case the base proved is no longer
+proven. A compiler change must keep each neuron's output a separate signal per layer
+(`Netlist.layer_outputs`) and its counters recognisable as LUT groups over the same inputs,
+or extend the prover so the proof still goes through.
 
 Pipeline: `model.py` (ternary network) -> `compiler.py` -> `netlist.py` (what we produce)
--> `simulator.py` -> `evaluate.py`. The compiler's module docstring lists known headroom.
+-> `simulator.py` and `prove.py` -> `evaluate.py`. The compiler's module docstring lists known headroom.
 
 ## How to work
 

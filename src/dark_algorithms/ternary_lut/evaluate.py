@@ -2,7 +2,9 @@
 
 Correctness: the simulated netlist must agree with the reference network on
 every input vector. Small networks (<= EXHAUSTIVE_MAX_INPUTS inputs) are checked
-exhaustively, which is a proof of equivalence; larger ones on random samples.
+exhaustively, larger ones on random samples. Every circuit is also proven equivalent
+for all inputs with BDDs (see prove.py), time-boxed; `proven` reports whether it was.
+A proof that finds a real counterexample makes the circuit not equivalent.
 
 Quality, for a correct circuit:
   * lut_count       - area (lower is better),
@@ -20,6 +22,7 @@ import numpy as np
 from .compiler import DEFAULT_K, compile_network
 from .model import TernaryNetwork
 from .netlist import Netlist
+from .prove import prove_equivalence
 from .simulator import simulate
 
 EXHAUSTIVE_MAX_INPUTS = 16
@@ -38,6 +41,8 @@ class EvalResult:
     equivalent: bool
     exhaustive: bool
     vectors_checked: int
+    proven: bool
+    proof_seconds: float
     lut_count: int
     depth: int
     baseline_lut_count: int
@@ -77,7 +82,11 @@ def check_equivalence(
 
 
 def evaluate(
-    network: TernaryNetwork, k: int = DEFAULT_K, num_samples: int = 4096, seed: int = 0
+    network: TernaryNetwork,
+    k: int = DEFAULT_K,
+    num_samples: int = 4096,
+    seed: int = 0,
+    proof_time_box: float = 300.0,
 ) -> EvalResult:
     """Compile with and without sparsity exploitation, verify, and report quality metrics."""
     start = time.perf_counter()
@@ -85,11 +94,14 @@ def evaluate(
     compile_seconds = time.perf_counter() - start
     baseline = compile_network(network, k=k, prune_zeros=False)
     eq = check_equivalence(network, netlist, num_samples=num_samples, seed=seed)
+    proof = prove_equivalence(network, netlist, time_box=proof_time_box)
     base_count = baseline.lut_count()
     return EvalResult(
-        equivalent=eq.equivalent,
+        equivalent=eq.equivalent and not proof.refuted,
         exhaustive=eq.exhaustive,
         vectors_checked=eq.vectors_checked,
+        proven=proof.proven,
+        proof_seconds=proof.seconds,
         lut_count=netlist.lut_count(),
         depth=netlist.depth(),
         baseline_lut_count=base_count,
