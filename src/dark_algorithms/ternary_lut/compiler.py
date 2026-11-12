@@ -33,23 +33,37 @@ Strategy:
 * Tall columns mean fewer counters but a longer chain, so every neuron is built for each
   target column height 2..k and each applicable counter shape, with and without the lazy
   last stage.
+* Counters shared across neurons: neurons of one layer that contain the same k literals
+  (or all of them inverted: the count is then g - c, i.e. the counter's bits inverted
+  plus a constant, which folds into the reading LUTs) read one shared k-input counter
+  (full adder at k=4) instead of building one each; groups of k-1 literals follow once
+  k-literal groups run out. In a 70%-sparse layer any two neurons share about a dozen
+  literals in one orientation, so most first-stage counters can be shared. A neuron's
+  own literals get a first stage at the same level, then the merged heap is compressed
+  as above. Shared neurons must stay within a depth limit, either the depth their layer
+  reaches without sharing or their own, and the network keeps the shallower (then
+  smaller) of the two; a neuron with no version within its limit is built alone.
 * Which version a neuron gets depends on the network's critical path: a first pass builds
-  every neuron in its shallowest version (fewest LUTs among those) and fixes the network
-  depth D; the second pass gives every neuron the cheapest version whose output level is
-  at most D minus the longest path from that neuron to an output in the first pass. A
-  neuron off the critical path can thus use a deeper, cheaper version, and the network is
-  never deeper than the all-shallowest one.
+  every neuron alone in its shallowest version (fewest LUTs among those) and fixes the
+  network depth D; the second pass gives every neuron the cheapest version whose output
+  level is at most D minus the longest path from that neuron to an output in the first
+  pass (shared neurons are held to that level as well as to their sharing limit). Both
+  passes run under both sharing depth policies and the shallowest, then smallest, of the
+  four networks is kept.
 * Identical LUTs are shared (structural hashing), constant LUTs become constant
   signals, and LUTs no output depends on are swept away.
 
 Known headroom, roughly in order of expected payoff:
-  - a Dadda-style schedule for all stages, not just the last one (a plain Dadda height
-    sequence, which assumes uniform columns, adds stages and was worse: see JOURNAL.md),
-    and GPC shapes chosen per column by a small search instead of the greedy fill,
-  - sharing literal groups (counters) across neurons that read the same inputs,
+  - a better choice of shared groups: an exact cover of each neuron's literals instead of
+    the greedy pair-first carving, groups shared across more neurons, and shared second-
+    stage counters (a 70%-sparse layer still builds about 0.7 LUTs per literal),
+  - GPC shapes chosen per column by a small search instead of the greedy fill (a lazy
+    schedule for every stage, not just the last, was tried and only saved 0.3%, see
+    JOURNAL.md),
   - exact synthesis for small cones,
   - required levels from a true backward timing pass over the final netlist instead of
-    the first pass's paths, and trading depth for LUTs beyond the shallowest network.
+    the first pass's paths, a shared-neuron trial cache (the benchmark now takes ~4.5
+    minutes), and trading depth for LUTs beyond the shallowest network.
 
 Setting `prune_zeros=False` compiles every weight, zero or not, as if the
 hardware could not exploit sparsity. It is the baseline the eval compares against.
@@ -162,6 +176,20 @@ class _Builder:
             self._level.append(1 + max(self._level[s] for s in inputs))
         return self._cache[key]
 
+    def trial(self, build: Callable[[], int | Sequence[int]]) -> tuple[int, int]:
+        """Run `build`, report (new LUTs, depth of its outputs), then undo every LUT it added."""
+        luts, levels = self.trial_levels(build)
+        return luts, max(levels, default=0)
+
+    def trial_levels(self, build: Callable[[], int | Sequence[int]]) -> tuple[int, list[int]]:
+        """Run `build`, report (new LUTs, depth of each output), then undo every LUT it added."""
+        mark = len(self.netlist.luts)
+        out = build()
+        outs = [out] if isinstance(out, int) else list(out)
+        cost = (len(self.netlist.luts) - mark, [self._level[s] for s in outs])
+        self._undo(mark)
+        return cost
+
     def level(self, signal: int) -> int:
         return self._level[signal]
 
@@ -173,14 +201,6 @@ class _Builder:
         for key in self._added[mark:]:
             del self._cache[key]
         del self._added[mark:]
-
-    def trial(self, build: Callable[[], int]) -> tuple[int, int]:
-        """Run `build`, report (new LUTs, depth of its output), then undo every LUT it added."""
-        mark = len(self.netlist.luts)
-        out = build()
-        cost = (len(self.netlist.luts) - mark, self._level[out])
-        self._undo(mark)
-        return cost
 
     # -- popcount threshold: compressor tree + comparator chain ------------------------------
 
@@ -360,6 +380,20 @@ class _Builder:
 
     # -- neurons ----------------------------------------------------------------------------
 
+    def shared_counter(self, group: SharedGroup, current: Sequence[int]) -> BitHeap:
+        """Build a counter shared by several neurons; returns its sum as a heap (in group order).
+
+        The counter sums the group's literals as the group defines them. A member that reads
+        every literal of the group inverted (orientation -1) sees g - count instead, which is
+        the counter's bits inverted plus the constant g - (2^m - 1): the inversions fold into
+        the LUTs that read the bits, so both orientations share one counter.
+        """
+        elems = [Elem(current[i], 0, 1) if w > 0 else Elem(current[i], 1, 0) for i, w in group.lits]
+        heap = BitHeap()
+        for sig, j in self.counter(elems):
+            heap.add_signal(j, sig)
+        return heap
+
     def neuron(
         self,
         terms: Sequence[tuple[int, int]],
@@ -377,7 +411,7 @@ class _Builder:
         whose output level is at most max_level, or, with `shallowest`, in the version with
         the least depth (then fewest LUTs). If no version meets max_level, the shallowest one
         is used. `costs` caches the trial results of a neuron whose inputs arrive at the same
-        levels, so a second pass over the network does not repeat them.
+        levels, so later passes over the network do not repeat them.
         """
         k = self.netlist.k
         if len(terms) <= k:
@@ -425,6 +459,210 @@ class _Builder:
         best = min(fits, key=lambda t: (t[0], t[1], t[2])) if fits else by_depth
         return build(*best[2])
 
+    def shared_neuron(
+        self,
+        terms: Sequence[tuple[int, int]],
+        literal_threshold: int,
+        shared: Sequence[tuple[BitHeap, int, int]],
+        depth_limit: int | None = None,
+    ) -> int | None:
+        """Popcount threshold over the free literals in `terms` plus shared counter sums.
+
+        `shared` holds (counter heap, orientation, group size) for literal groups whose
+        counters other neurons reuse; their literals are not in `terms`, and
+        `literal_threshold` already counts their inverted literals (see compile_layer).
+
+        The free literals get their own first stage of counters, built at the same level as
+        the shared counters, so mixing the two does not lengthen the path; then the merged
+        heap is compressed and compared as for any wide neuron. The cheapest version within
+        `depth_limit` wins; if none fits, nothing is built and None is returned.
+        """
+        k = self.netlist.k
+        elems = [Elem(s, 1, 0) if w < 0 else Elem(s, 0, 1 if w > 0 else 0) for s, w in terms]
+        literal_threshold += sum(1 for _, w in terms if w < 0)
+
+        def build(
+            max_height: int, gpc: bool, group_size: int, first_stage: bool, lazy: bool
+        ) -> int:
+            heap = BitHeap(cols={0: list(elems)} if elems else {})
+            if first_stage and len(elems) >= 3:
+                self.compress(heap, max_height=len(elems) - 1, group_size=group_size)
+            for counter, orientation, size in shared:
+                if orientation > 0:
+                    for col, bits in counter.cols.items():
+                        heap.extend(col, bits)
+                    heap.offset += counter.offset
+                else:
+                    # size - sum = size - offset - sum(bits): each bit b of column j becomes
+                    # its inverse (1 - b) minus 2^j.
+                    heap.offset += size - counter.offset
+                    for col, bits in counter.cols.items():
+                        heap.extend(col, [Elem(e.signal, e.hi, e.lo) for e in bits])
+                        heap.offset -= len(bits) << col
+            self.compress(heap, max_height, gpc=gpc, group_size=group_size, lazy=lazy)
+            return self.heap_at_least(heap, literal_threshold)
+
+        outs = k.bit_length()
+        group_sizes = (0, 3) if 2 * (k - outs) < outs else (0,)
+        gpcs = (False, True) if k >= 5 else (False,)
+        options = [
+            (h, gpc, g, first, lazy)
+            for lazy in (False, True)
+            for first in (True, False)
+            for g in group_sizes
+            for gpc in gpcs
+            for h in range(2, k + 1)
+        ]
+        limit = depth_limit if depth_limit is not None else 1 << 30
+        costs = [(*self.trial(lambda o=o: build(*o)), o) for o in options]
+        fitting = [c for c in costs if c[1] <= limit]
+        if not fitting:
+            return None
+        return build(*min(fitting)[2])
+
+
+@dataclass(frozen=True)
+class SharedGroup:
+    """Literals (input index, weight +-1) summed by one counter that several neurons read.
+
+    members holds (neuron index, orientation): +1 if the neuron has exactly these weights,
+    -1 if it has all of them negated.
+    """
+
+    lits: tuple[tuple[int, int], ...]
+    members: tuple[tuple[int, int], ...]
+
+
+def find_shared_groups(weights: np.ndarray, size: int, min_fanin: int) -> list[SharedGroup]:
+    """Greedily carve literal groups of `size` that two or more neurons of a layer contain.
+
+    Only neurons with more than `min_fanin` non-zero weights (the ones built as counter
+    trees) take part. Each round takes the pair of neurons with the most common free
+    literals in one orientation, narrows the common set while further neurons can join it
+    with `size` literals left, and turns `size` of those literals into a group. A literal
+    belongs to at most one group per neuron.
+    """
+    w = np.asarray(weights, dtype=np.int64)
+    wide = np.flatnonzero(np.count_nonzero(w, axis=1) > min_fanin)
+    if len(wide) < 2:
+        return []
+    free = w[wide].astype(np.float64)
+    groups: list[SharedGroup] = []
+    while True:
+        mag = np.abs(free)
+        dot, both = free @ free.T, mag @ mag.T
+        agree, disagree = (both + dot) / 2, (both - dot) / 2
+        np.fill_diagonal(agree, 0)
+        np.fill_diagonal(disagree, 0)
+        pick_agree = agree.max() >= disagree.max()
+        common = agree if pick_agree else disagree
+        a, b = np.unravel_index(int(np.argmax(common)), common.shape)
+        if common[a, b] < size:
+            return groups
+        ref = free[a].copy()
+        members = {int(a): 1, int(b): 1 if pick_agree else -1}
+        cols = np.flatnonzero((ref != 0) & (free[b] == members[int(b)] * ref))
+        while True:
+            sub = free[:, cols]
+            same = (sub == ref[cols]).sum(axis=1)
+            flip = (sub == -ref[cols]).sum(axis=1)
+            score = np.maximum(same, flip)
+            score[list(members)] = -1
+            c = int(np.argmax(score))
+            if score[c] < size:
+                break
+            orient = 1 if same[c] >= flip[c] else -1
+            members[c] = orient
+            cols = cols[free[c, cols] == orient * ref[cols]]
+        cols = cols[:size]
+        for m, orient in members.items():
+            assert (free[m, cols] == orient * ref[cols]).all()
+            free[m, cols] = 0
+        groups.append(
+            SharedGroup(
+                lits=tuple((int(i), int(ref[i])) for i in cols),
+                members=tuple(sorted((int(wide[m]), o) for m, o in members.items())),
+            )
+        )
+
+
+def shared_group_size(k: int) -> int:
+    """Counter size worth sharing: k bits, or a full adder when a k-bit counter is poor (k=4)."""
+    outs = k.bit_length()
+    return 3 if 2 * (k - outs) < outs else k
+
+
+def compile_layer(
+    b: _Builder,
+    weights: np.ndarray,
+    thresholds: np.ndarray,
+    current: list[int],
+    share: bool,
+    prune_zeros: bool = True,
+    depth_limits: Sequence[int] | None = None,
+    required: Sequence[int | None] | None = None,
+    shallowest: bool = False,
+    costs: dict | None = None,
+) -> list[int]:
+    """Output signals of one layer, optionally with counters shared across its neurons.
+
+    `depth_limits` caps the depth of each neuron that reads shared counters (see
+    _Builder.shared_neuron); compile_network passes each neuron's depth without sharing.
+    `required` gives each neuron the level its output has to reach (see compile_network),
+    `shallowest` builds every neuron alone in its shallowest version, and `costs` caches
+    the trial results of neurons built alone.
+    """
+    k = b.netlist.k
+    groups = []
+    if share:
+        size = shared_group_size(k)
+        groups = find_shared_groups(weights, size, k)
+        if size > 5:
+            used = np.zeros(weights.shape, dtype=bool)
+            for g in groups:
+                for m, _ in g.members:
+                    used[m, [i for i, _ in g.lits]] = True
+            rest = np.where(used, 0, weights)
+            wide = np.count_nonzero(weights, axis=1) > k
+            rest[~wide] = 0
+            groups += find_shared_groups(rest, size - 1, 0)
+    per_neuron: dict[int, list[tuple[BitHeap, int, int]]] = {}
+    in_group: dict[int, set[int]] = {}
+    for g in groups:
+        counter = b.shared_counter(g, current)
+        for m, orient in g.members:
+            per_neuron.setdefault(m, []).append((counter, orient, len(g.lits)))
+            in_group.setdefault(m, set()).update(i for i, _ in g.lits)
+    outs = []
+    for j in range(weights.shape[0]):
+        row = weights[j]
+        grouped = in_group.get(j, set())
+        terms = [
+            (current[i], int(row[i]))
+            for i in range(len(row))
+            if i not in grouped and (row[i] != 0 or not prune_zeros)
+        ]
+        threshold = int(thresholds[j])
+        out = None
+        need = required[j] if required is not None else None
+        if j in per_neuron:
+            # Popcount threshold: every -1 weight in a shared group is an inverted literal.
+            literal_threshold = threshold + sum(1 for i in grouped if row[i] < 0)
+            limits = [x for x in (depth_limits[j] if depth_limits else None, need) if x]
+            limit = min(limits) if limits else None
+            out = b.shared_neuron(terms, literal_threshold, per_neuron[j], limit)
+        if out is None:  # not in a group, or no version around its groups is shallow enough
+            all_terms = [(current[i], int(row[i])) for i in range(len(row))]
+            out = b.neuron(
+                [t for t in all_terms if t[1] != 0 or not prune_zeros],
+                threshold,
+                max_level=need,
+                shallowest=shallowest,
+                costs=costs,
+            )
+        outs.append(out)
+    return outs
+
 
 def _paths_to_outputs(netlist: Netlist) -> list[int]:
     """For every signal, the most LUTs on a path from it to an output (0 for an output)."""
@@ -436,69 +674,85 @@ def _paths_to_outputs(netlist: Netlist) -> list[int]:
     return down
 
 
-def _build_network(
-    network: TernaryNetwork,
-    k: int,
-    prune_zeros: bool,
-    costs: dict,
-    required: Callable[[int], int | None] | None,
-) -> tuple[_Builder, list[int]]:
-    """Build every neuron, layer by layer; returns the builder and the neuron output signals.
-
-    With `required` None every neuron gets its shallowest version; otherwise neuron number n
-    (counting through all layers) gets its cheapest version within level required(n).
-    """
-    b = _Builder(k, network.num_inputs)
-    current = [b.netlist.input_signal(i) for i in range(network.num_inputs)]
-    neuron_signals: list[int] = []
-    for layer in network.layers:
-        nxt = []
-        for j in range(layer.out_features):
-            row = layer.weights[j]
-            terms = [
-                (current[i], int(row[i]))
-                for i in range(layer.in_features)
-                if row[i] != 0 or not prune_zeros
-            ]
-            n = len(neuron_signals) + len(nxt)
-            limit = required(n) if required is not None else None
-            nxt.append(
-                b.neuron(
-                    terms,
-                    int(layer.thresholds[j]),
-                    max_level=limit,
-                    shallowest=required is None,
-                    costs=costs,
-                )
-            )
-        neuron_signals.extend(nxt)
-        current = nxt
-    b.netlist.outputs = current
-    return b, neuron_signals
-
-
 def compile_network(
-    network: TernaryNetwork, k: int = DEFAULT_K, prune_zeros: bool = True
+    network: TernaryNetwork,
+    k: int = DEFAULT_K,
+    prune_zeros: bool = True,
+    share_counters: bool = True,
 ) -> Netlist:
     """Compile `network` into a validated, swept k-LUT netlist with identical behaviour.
 
-    Two passes: the first builds every neuron in its shallowest version and so fixes the
-    network depth D and, for every neuron, the longest path from it to an output. The second
-    gives every neuron the cheapest version that still lets its output arrive by D minus that
-    path. The first pass's version always meets this level (its paths do not depend on when
-    the inputs arrive), so the result is never deeper than the first pass.
+    Counters shared across a layer's neurons save LUTs, but a neuron's cheapest version
+    around them can be deeper. Two depth policies for shared neurons are compiled: each may
+    reach the depth its layer reaches without sharing, or only its own depth without
+    sharing. `share_counters=False` builds every neuron alone.
+
+    For each policy the network is built twice. The first pass builds every neuron alone in
+    its shallowest version, which fixes the network depth D and, for every neuron, the
+    longest path from it to an output. The second pass gives every neuron the cheapest
+    version that still lets its output arrive by D minus that path, so neurons off the
+    critical path can use deeper, cheaper versions. Of all builds the shallowest network,
+    then the smallest, is kept.
     """
     if k < 3:
         raise ValueError("k must be at least 3 (the counters need 3-input LUTs)")
     costs: dict = {}
-    first, first_signals = _build_network(network, k, prune_zeros, costs, None)
-    down = _paths_to_outputs(first.netlist)
-    depth = max((first.level(s) for s in first.netlist.outputs), default=0)
-
-    def required(n: int) -> int:
-        return depth - down[first_signals[n]]
-
-    b, _ = _build_network(network, k, prune_zeros, costs, required)
-    netlist = b.netlist.sweep()
+    policies = (False, True) if share_counters else (None,)
+    best = None
+    for per_neuron in policies:
+        share = per_neuron is not None
+        first, signals = _compile(network, k, prune_zeros, bool(per_neuron), share, costs)
+        down = _paths_to_outputs(first.netlist)
+        depth = max((first.level(s) for s in first.netlist.outputs), default=0)
+        required = [depth - down[s] for s in signals]
+        second, _ = _compile(network, k, prune_zeros, bool(per_neuron), share, costs, required)
+        for b in (first, second):
+            netlist = b.netlist.sweep()
+            key = (netlist.depth(), netlist.lut_count())
+            if best is None or key < best[0]:
+                best = (key, netlist)
+    netlist = best[1]
     netlist.validate()
     return netlist
+
+
+def _compile(
+    network: TernaryNetwork,
+    k: int,
+    prune_zeros: bool,
+    per_neuron: bool,
+    share: bool,
+    costs: dict,
+    required: Sequence[int] | None = None,
+) -> tuple[_Builder, list[int]]:
+    """Build the network layer by layer; returns the builder and every neuron's output signal.
+
+    With `required` None, neurons built alone get their shallowest version; otherwise neuron
+    number n (counting through all layers) gets its cheapest version within level
+    required[n], and shared neurons are held to that level too.
+    """
+    b = _Builder(k, network.num_inputs)
+    current = [b.netlist.input_signal(i) for i in range(network.num_inputs)]
+    signals: list[int] = []
+    for layer in network.layers:
+        w, t = layer.weights, layer.thresholds
+        need = required[len(signals) : len(signals) + len(t)] if required is not None else None
+
+        def build(share: bool, limits: list[int] | None = None, w=w, t=t, cur=current, need=need):
+            return compile_layer(
+                b, w, t, cur, share, prune_zeros, limits, need, need is None, costs
+            )
+
+        if not share:
+            current = build(False)
+        else:
+            # Sharing is kept only for layers where it pays (fewest LUTs, then least depth).
+            plain_luts, levels = b.trial_levels(lambda: build(False))
+            plain = (plain_luts, max(levels, default=0))
+            if not per_neuron:
+                levels = [plain[1]] * len(levels)
+            shared = b.trial(lambda levels=levels: build(True, levels))
+            current = build(True, levels) if shared < plain else build(False)
+        signals.extend(current)
+    b.netlist.outputs = current
+    return b, signals
