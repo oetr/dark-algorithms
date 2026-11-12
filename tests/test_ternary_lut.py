@@ -324,6 +324,49 @@ def test_shared_groups_respect_orientation_and_disjointness():
                 used[m].add(i)
 
 
+def test_shared_groups_serve_the_most_constrained_neuron_first():
+    # Neurons 0 and 1 can each share three literals only with neuron 2. Neuron 2 has four
+    # in common with neuron 1 (inputs 1, 2, 5, 7, inverted) and three with neuron 0
+    # (inputs 3, 5, 6, inverted). Taking the pair with the most common literals first
+    # (1 and 2) uses up input 5 and leaves neuron 0 with nothing to share; serving neuron 0
+    # first lets both pairs share a full adder.
+    w = np.array(
+        [
+            [0, 0, 1, -1, 1, -1, 1, 0],
+            [1, 1, -1, 0, 0, -1, 0, 1],
+            [1, -1, 1, 1, 1, 1, -1, -1],
+        ],
+        dtype=np.int8,
+    )
+    groups = find_shared_groups(w, 3, 3)
+    assert sorted(tuple(m for m, _ in g.members) for g in groups) == [(0, 2), (1, 2)]
+    for g in groups:
+        for m, orient in g.members:
+            assert all(w[m, i] == orient * wi for i, wi in g.lits)
+    x = all_vectors(8)
+    for t in range(-2, 3):
+        net = TernaryNetwork((TernaryLayer(w, np.array([t, -t, t])),))
+        nl = compile_network(net, k=4)
+        assert (simulate(nl, x) == net.forward(x)).all(), t
+
+
+def test_shared_group_keeps_widely_held_literals_free():
+    # Neurons 0 and 1 share inputs 0-3, but input 0 is also what neurons 2 and 3 need to
+    # fill a group of three, so the first group takes inputs 1-3 and leaves 0 to them.
+    w = np.array(
+        [
+            [1, 1, 1, 1, 0, 0],
+            [1, 1, 1, 1, 0, 0],
+            [1, 0, 0, 0, 1, 1],
+            [1, 0, 0, 0, 1, 1],
+        ],
+        dtype=np.int8,
+    )
+    groups = find_shared_groups(w, 3, 0)
+    found = sorted((sorted(i for i, _ in g.lits), [m for m, _ in g.members]) for g in groups)
+    assert found == [([0, 4, 5], [2, 3]), ([1, 2, 3], [0, 1])]
+
+
 def test_inverted_member_reads_shared_counter_exactly():
     # Neuron 1 has neuron 0's first eight weights negated: they share one counter
     # in opposite orientations. Exhaustive over all 2^14 inputs and every threshold.

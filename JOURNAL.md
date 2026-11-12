@@ -3,6 +3,40 @@
 Ideas tried by the agents improving this repository, newest first, including the ones that
 did not work, so later runs don't repeat them. One entry per idea: date, idea, result.
 
+## 2026-11-12 - shared counter groups carved most-constrained neuron first
+
+- Why: the four merges before this one changed only the measurement (18,777 LUTs since
+  the lazy last stage). Per neuron the tree is close to its local optimum: the first two
+  Wallace stages of a 72-input neuron remove exactly one bit per LUT (54 LUTs for 54 bits)
+  and a 7-input threshold needs 3 LUTs, which is what we build. Sharing is where the
+  dense cases still lose: a 6:3 counter shared by two neurons removes two bits per LUT, and
+  the pair-first greedy shared only 71% of mlp-256-s70's first-layer literals (57% in
+  its second layer).
+- Idea: carving groups is a matching problem, and taking the pair with the most common
+  literals first uses up well-connected neurons' literals early. Each round now serves the
+  neuron with the fewest partners left (two neurons are partners while they have k common
+  free literals in one orientation; ties: most free literals), pairs it with its partner
+  that has the fewest partners itself (then most common literals), and takes the k common
+  literals that the fewest other neurons still hold.
+- Result: total 18,777 -> 18,471 LUTs (-1.6%), worst depth 17 -> 16, every case proven,
+  no case larger or deeper: mlp-256-s70 8,752 -> 8,592 and depth 17 -> 16, k=4 5,219 ->
+  5,129 (full-adder groups), mlp-64-s70 1,168 -> 1,124, mlp-256-s90 2,819 -> 2,807; tiny
+  and mlp-256-s95 unchanged. Coverage of mlp-256-s70 layer 1: 71% -> 83%, layer 2: 57% ->
+  67%, with fewer three-neuron groups (2.27 -> 2.03 members on average). Gap to Yosys/ABC
+  -41.5% -> -42.5%, to the vendor flows -31.4% -> -32.4%. The dense baseline uses the same
+  sharing and shrinks too (mlp-256-s70 13,604 -> 12,198), so lut_reduction drops for the
+  70% cases although the sparse circuits got smaller. Compile time unchanged.
+- Variants measured on mlp-256-s70 + mlp-64-s70 (base 9,920): most-constrained neuron with
+  its best partner and literals by index 9,721; the same with least-held literals 9,664
+  (8,529 at depth 17 for s70); with the most constrained partner as well 9,716, but s70
+  at depth 16. Per depth policy that last variant is best under both: 8,474 at depth 17
+  (layer-wide limit) and 8,592 at depth 16 (per-neuron limit), against 8,752 and 8,964 on
+  main; the compiler keeps the shallower network.
+- Not tried, judged poor: sharing second-stage counters between a pair. The bits two
+  neurons share after the first stage are at most a few per column, and a shared full
+  adder over three of them removes one bit per LUT, no better than each neuron's own 6:3
+  counters; it would need six shared bits in one column (six groups between one pair).
+
 ## 2026-11-12 - real-FPGA reference: Yosys vendor flows with carry chains
 
 - Idea: the LUT-only Yosys/ABC reference (`synth -lut K`) cannot use carry chains, which make

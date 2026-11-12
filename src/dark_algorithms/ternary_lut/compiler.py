@@ -36,9 +36,12 @@ Strategy:
 * Counters shared across neurons: neurons of one layer that contain the same k literals
   (or all of them inverted: the count is then g - c, i.e. the counter's bits inverted
   plus a constant, which folds into the reading LUTs) read one shared k-input counter
-  (full adder at k=4) instead of building one each; groups of k-1 literals follow once
+  (full adder at   k=4) instead of building one each; groups of k-1 literals follow once
   k-literal groups run out. In a 70%-sparse layer any two neurons share about a dozen
-  literals in one orientation, so most first-stage counters can be shared. A neuron's
+  literals in one orientation, so most first-stage counters can be shared. Groups are
+  carved as a matching: the neuron with the fewest possible partners left is served
+  first, with its most constrained partner, and a group takes the common literals that
+  the fewest other neurons still hold (see find_shared_groups). A neuron's
   own literals get a first stage at the same level, then the merged heap is compressed
   as above. Shared neurons must stay within a depth limit, either the depth their layer
   reaches without sharing or their own, and the network keeps the shallower (then
@@ -54,9 +57,11 @@ Strategy:
   signals, and LUTs no output depends on are swept away.
 
 Known headroom, roughly in order of expected payoff:
-  - a better choice of shared groups: an exact cover of each neuron's literals instead of
-    the greedy pair-first carving, groups shared across more neurons, and shared second-
-    stage counters (a 70%-sparse layer still builds about 0.7 LUTs per literal),
+  - a still better choice of shared groups: the most-constrained-first matching shares
+    83% of the literals of mlp-256-s70's first layer (pair-first greedy: 71%); an exact
+    or local-search cover, groups shared across more neurons, and choosing the carving
+    with the depth policies in mind (the carving moves which policy gives the shallower
+    network) are open,
   - GPC shapes chosen per column by a small search instead of the greedy fill (a lazy
     schedule for every stage, not just the last, was tried and only saved 0.3%, see
     JOURNAL.md),
