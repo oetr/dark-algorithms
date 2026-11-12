@@ -64,10 +64,11 @@ def summary_table(results: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def export_otlp(results: list[dict], revision: str) -> None:
+def export_otlp(results: list[dict], revision: str) -> bool:
+    """Send results as gauges in one OTLP request. Returns False if the backend rejected them."""
     from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
     from opentelemetry.sdk.metrics import MeterProvider
-    from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+    from opentelemetry.sdk.metrics.export import InMemoryMetricReader, MetricExportResult
     from opentelemetry.sdk.resources import Resource
 
     resource = Resource.create(
@@ -80,7 +81,7 @@ def export_otlp(results: list[dict], revision: str) -> None:
             ),
         }
     )
-    reader = PeriodicExportingMetricReader(OTLPMetricExporter(), export_interval_millis=60_000)
+    reader = InMemoryMetricReader()
     provider = MeterProvider(resource=resource, metric_readers=[reader])
     meter = provider.get_meter("dark_algorithms.benchmark")
     gauges = {
@@ -99,7 +100,14 @@ def export_otlp(results: list[dict], revision: str) -> None:
         attrs = {"benchmark.case": r["case"], "algorithm": ALGORITHM, "lut.k": r["k"]}
         for key, gauge in gauges.items():
             gauge.set(float(r[key]), attrs)
-    provider.shutdown()  # flushes the final collection exactly once
+    data = reader.get_metrics_data()
+    exporter = OTLPMetricExporter()
+    try:
+        result = exporter.export(data)
+    finally:
+        exporter.shutdown()
+        provider.shutdown()
+    return result == MetricExportResult.SUCCESS
 
 
 def main() -> int:
@@ -116,7 +124,9 @@ def main() -> int:
             json.dumps({"revision": revision, "algorithm": ALGORITHM, "results": results}, indent=2)
         )
     if args.export_otlp:
-        export_otlp(results, revision)
+        if not export_otlp(results, revision):
+            print("FAIL: the OTLP backend rejected the metrics; check endpoint and token.")
+            return 1
         print("Exported benchmark metrics over OTLP.")
     return 0 if all(r["equivalent"] for r in results) else 1
 
