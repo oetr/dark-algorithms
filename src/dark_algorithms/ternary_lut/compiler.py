@@ -1,23 +1,37 @@
 """Compile a ternary network into a k-LUT netlist with no weight memory.
 
-Strategy (v1, deliberately simple so later changes have a clear baseline):
+Strategy:
 
 * Zero weights are dropped: a neuron only wires up its non-zero inputs.
 * A neuron whose remaining fan-in fits in one LUT (<= k inputs) becomes a single
   LUT whose truth table is the threshold function itself.
-* A wider neuron is split into chunks of <= k inputs. Each chunk's partial sum is
-  produced as a two's-complement integer, one LUT per bit (the threshold is folded
-  into the first chunk). Partial sums are added in a balanced tree of ripple-carry
-  adders built from LUTs, and the neuron fires when the final sum is non-negative,
-  i.e. when its sign bit is 0.
+* A wider neuron is rewritten as a popcount threshold: with x' = 1 - x for every -1
+  weight, sum(w * x) >= t  <=>  popcount(literals) >= t + #negative weights. The
+  inversions fold into the truth tables of the LUTs that read the literals, so they
+  cost nothing.
+* The literals form a bit heap (columns of equally weighted bits) that a Wallace-style
+  tree of generalised counters compresses: each LUT level cuts every column into groups
+  of up to k bits, and a group of g bits becomes ceil(log2(g + 1)) bits in the next
+  columns (a 6:3 counter removes three bits for three LUTs, where a ripple-carry adder
+  removes about one bit per two LUTs).
+* The compressed heap is compared with the constant threshold by a comparator chain
+  that walks the columns from the least significant one and passes on only the small
+  integer carry floor((low part - low threshold bits) / 2^c). Each step reads as many
+  whole columns as fit next to the carry, and the last step is the neuron's output, so
+  no adder result or sign bit is ever materialised.
+* Tall columns mean fewer counters but a longer chain, so every neuron is built for each
+  target column height 2..k and the cheapest version (fewest new LUTs, then least depth)
+  is kept.
 * Identical LUTs are shared (structural hashing), constant LUTs become constant
   signals, and LUTs no output depends on are swept away.
 
 Known headroom, roughly in order of expected payoff:
-  - fold the sign-bit inverter into consuming LUTs instead of spending a LUT on it,
-  - wider adders per LUT level (a k=6 LUT can add two 3-bit numbers in one level),
-  - grouping inputs into chunks by shared structure across neurons,
-  - exact synthesis for small neurons.
+  - generalised parallel counters that read two columns, e.g. (1,5;3) or (2,3;3), and a
+    Dadda-style schedule that compresses only as much as each column needs,
+  - sharing literal groups (counters) across neurons that read the same inputs,
+  - exact synthesis for small cones,
+  - choosing per-neuron structures against the network's critical path instead of
+    neuron-local depth.
 
 Setting `prune_zeros=False` compiles every weight, zero or not, as if the
 hardware could not exploit sparsity. It is the baseline the eval compares against.
@@ -37,29 +51,6 @@ from .netlist import CONST0, CONST1, Lut, Netlist
 DEFAULT_K = 6
 
 
-def bits_for_range(lo: int, hi: int) -> int:
-    """Smallest two's-complement width that represents every integer in [lo, hi]."""
-    if lo > hi:
-        raise ValueError("empty range")
-    width = 1
-    while not (-(1 << (width - 1)) <= lo and hi <= (1 << (width - 1)) - 1):
-        width += 1
-    return width
-
-
-@dataclass(frozen=True)
-class IntSignal:
-    """A signed integer on `bits` (LSB first, two's complement), known to lie in [lo, hi]."""
-
-    bits: tuple[int, ...]
-    lo: int
-    hi: int
-
-    def bit(self, j: int) -> int:
-        """Bit j, sign-extended past the stored width."""
-        return self.bits[min(j, len(self.bits) - 1)]
-
-
 @cache
 def combinations(n: int) -> np.ndarray:
     """All 2^n input combinations as rows of bits; row idx has bit j = (idx >> j) & 1."""
@@ -70,7 +61,7 @@ def combinations(n: int) -> np.ndarray:
 
 
 def elem_values(elems: Sequence[tuple[Elem, int]], first_column: int = 0) -> np.ndarray:
-    """Value of sum(e.value(bit) << shift) for every combination of the elems' signals.
+    """Value of sum(bit-read-as-lo-or-hi << shift) for every combination of the elems' signals.
 
     The elems occupy LUT inputs first_column.. of a LUT with first_column + len(elems) inputs.
     """
@@ -93,9 +84,6 @@ class Elem:
     signal: int
     lo: int = 0
     hi: int = 1
-
-    def value(self, bit: int) -> int:
-        return self.hi if bit else self.lo
 
     @property
     def hi_value(self) -> int:
@@ -155,9 +143,6 @@ class _Builder:
             self._added.append(key)
             self._level.append(1 + max(self._level[s] for s in inputs))
         return self._cache[key]
-
-    def level(self, signal: int) -> int:
-        return self._level[signal]
 
     def trial(self, build: Callable[[], int]) -> tuple[int, int]:
         """Run `build`, report (new LUTs, depth of its output), then undo every LUT it added."""
@@ -320,7 +305,7 @@ def compile_network(
 ) -> Netlist:
     """Compile `network` into a validated, swept k-LUT netlist with identical behaviour."""
     if k < 3:
-        raise ValueError("k must be at least 3 (the adder needs 3-input LUTs)")
+        raise ValueError("k must be at least 3 (the counters need 3-input LUTs)")
     b = _Builder(k, network.num_inputs)
     current = [b.netlist.input_signal(i) for i in range(network.num_inputs)]
     for layer in network.layers:

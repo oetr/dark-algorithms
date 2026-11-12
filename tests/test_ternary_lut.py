@@ -14,7 +14,7 @@ from dark_algorithms.ternary_lut import (
     random_network,
     simulate,
 )
-from dark_algorithms.ternary_lut.compiler import _Builder, bits_for_range
+from dark_algorithms.ternary_lut.compiler import BitHeap, Elem, _Builder
 from dark_algorithms.ternary_lut.netlist import CONST0, CONST1
 
 
@@ -86,13 +86,6 @@ def test_depth_counts_lut_levels():
 # -- compiler building blocks ------------------------------------------------------------------
 
 
-@pytest.mark.parametrize(
-    "lo,hi,width", [(0, 0, 1), (-1, 0, 1), (0, 1, 2), (-6, 6, 4), (-8, 7, 4), (-9, 7, 5)]
-)
-def test_bits_for_range(lo, hi, width):
-    assert bits_for_range(lo, hi) == width
-
-
 def test_lut_builder_folds_constants_and_shares_identical_luts():
     b = _Builder(k=4, num_inputs=2)
     s0, s1 = b.netlist.input_signal(0), b.netlist.input_signal(1)
@@ -103,20 +96,66 @@ def test_lut_builder_folds_constants_and_shares_identical_luts():
     assert first == again and b.netlist.lut_count() == 1
 
 
-def test_adder_is_exact_over_all_inputs():
+def test_counter_is_exact_over_all_inputs():
     b = _Builder(k=6, num_inputs=6)
     sig = [b.netlist.input_signal(i) for i in range(6)]
-    a = b.chunk_sum([(sig[0], 1), (sig[1], 1), (sig[2], -1)], offset=-1)
-    c = b.chunk_sum([(sig[3], -1), (sig[4], -1), (sig[5], 1)], offset=2)
-    total = b.add(a, c)
-    b.netlist.outputs = list(total.bits)
+    lohi = [(0, 1), (1, 0), (0, 1), (1, 0), (0, 0), (0, 1)]  # +1, -1, +1, -1, 0, +1
+    outs = b.counter([Elem(s, lo, hi) for s, (lo, hi) in zip(sig, lohi, strict=True)])
+    assert [j for _, j in outs] == [0, 1, 2]  # 5 non-zero literals need 3 bits
+    b.netlist.outputs = [s for s, _ in outs]
     x = all_vectors(6)
-    out = simulate(b.netlist, x).astype(np.int64)
-    width = len(total.bits)
-    raw = (out << np.arange(width)).sum(axis=1)
-    value = np.where(raw >= 1 << (width - 1), raw - (1 << width), raw)
-    weights = np.array([1, 1, -1, -1, -1, 1])
-    assert (value == x @ weights + 1).all()
+    value = (simulate(b.netlist, x).astype(np.int64) << np.arange(3)).sum(axis=1)
+    lo = np.array([p[0] for p in lohi])
+    hi = np.array([p[1] for p in lohi])
+    assert (value == np.where(x == 1, hi, lo).sum(axis=1)).all()
+
+
+@pytest.mark.parametrize("k", [3, 4, 6])
+def test_heap_comparator_is_exact_for_every_threshold(k):
+    # 5 bits of weight 1, 4 of weight 2 and 3 of weight 4: value range 0..25.
+    n_inputs = 12
+    weights = np.array([1] * 5 + [2] * 4 + [4] * 3)
+    x = all_vectors(n_inputs)
+    value = x @ weights
+    for threshold in range(-1, 28):
+        b = _Builder(k=k, num_inputs=n_inputs)
+        sig = [b.netlist.input_signal(i) for i in range(n_inputs)]
+        heap = BitHeap()
+        for s, w in zip(sig, weights, strict=True):
+            heap.extend(int(w).bit_length() - 1, [Elem(s)])
+        b.compress(heap, max_height=3 if k > 3 else 2)
+        b.netlist.outputs = [b.heap_at_least(heap, threshold)]
+        assert b.netlist.depth() <= 6
+        out = simulate(b.netlist.sweep(), x).ravel()
+        assert (out == (value >= threshold)).all(), (k, threshold)
+
+
+@pytest.mark.parametrize("k", [3, 4, 6])
+def test_wide_neuron_matches_reference_for_every_threshold(k):
+    rng = np.random.default_rng(5)
+    w = rng.choice(np.array([-1, 1]), size=16)
+    x = all_vectors(16)
+    for threshold in range(int(w.clip(max=0).sum()) - 1, int(w.clip(min=0).sum()) + 2):
+        net = TernaryNetwork((TernaryLayer(w[None, :], np.array([threshold])),))
+        nl = compile_network(net, k=k)
+        assert (simulate(nl, x).ravel() == net.forward(x).ravel()).all(), (k, threshold)
+
+
+def test_negative_weights_cost_no_extra_luts():
+    w = np.ones(24, dtype=np.int8)
+    pos = compile_network(TernaryNetwork((TernaryLayer(w[None, :], np.array([12])),)))
+    neg = compile_network(TernaryNetwork((TernaryLayer(-w[None, :], np.array([-12])),)))
+    assert pos.lut_count() == neg.lut_count()
+    assert pos.depth() == neg.depth()
+
+
+def test_wide_neuron_beats_ripple_carry_adder_tree():
+    # 48 inputs: the previous chunked ripple-carry compiler used 82 LUTs at depth 10.
+    w = np.random.default_rng(2).choice(np.array([-1, 1]), size=48).astype(np.int8)
+    net = TernaryNetwork((TernaryLayer(w[None, :], np.array([0])),))
+    nl = compile_network(net)
+    assert check_equivalence(net, nl, num_samples=8192).equivalent
+    assert nl.lut_count() <= 45 and nl.depth() <= 6
 
 
 # -- end to end --------------------------------------------------------------------------------
