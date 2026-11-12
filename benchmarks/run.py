@@ -71,11 +71,13 @@ def export_otlp(results: list[dict], revision: str) -> bool:
     from opentelemetry.sdk.metrics.export import InMemoryMetricReader, MetricExportResult
     from opentelemetry.sdk.resources import Resource
 
-    resource = Resource.create(
+    # Keep every resource attribute identical across commits: a changing value (commit SHA,
+    # random instance id, SDK version) would start a new series, and dashboards summing the
+    # latest value per series would then add up all commits instead of showing the newest.
+    resource = Resource(
         {
             "service.name": "dark-algorithms-benchmark",
-            "service.version": revision,
-            "vcs.ref.head.revision": revision,
+            "service.instance.id": "ci-main",
             "vcs.repository.url.full": os.environ.get(
                 "BENCHMARK_REPOSITORY_URL", "https://github.com/oetr/dark-algorithms"
             ),
@@ -96,6 +98,10 @@ def export_otlp(results: list[dict], revision: str) -> bool:
             "dark_algorithms.benchmark.compile_duration", unit="s"
         ),
     }
+    # The commit lives on its own metric so the result series stay stable across commits.
+    meter.create_gauge("dark_algorithms.benchmark.run_info", unit="1").set(
+        1.0, {"vcs.ref.head.revision": revision, "algorithm": ALGORITHM}
+    )
     for r in results:
         attrs = {"benchmark.case": r["case"], "algorithm": ALGORITHM, "lut.k": r["k"]}
         for key, gauge in gauges.items():
