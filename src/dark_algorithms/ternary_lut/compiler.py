@@ -202,16 +202,18 @@ class _Builder:
     def trial_chains(
         self, prepare: Callable[[], BitHeap], threshold: int
     ) -> list[tuple[int, int, str]]:
-        """Build a heap with `prepare` once and try both comparator plans on it.
+        """Build a heap with `prepare` once and try every comparator chain on it.
 
-        Returns (new LUTs, output level, plan) for the shallowest and the cheapest chain
-        (see heap_at_least), then undoes everything; the compressor tree is shared by both.
+        Returns (new LUTs, output level, plan) for the shallowest and the cheapest planned
+        chain and the greedy one (see heap_at_least), then undoes everything; the compressor
+        tree is built once for all three. Keeping the greedy chain means no neuron version
+        is ever worse than it was before chains were planned.
         """
         mark = len(self.netlist.luts)
         heap = prepare()
         middle = len(self.netlist.luts)
         out = []
-        for plan in ("shallow", "cheap"):
+        for plan in ("shallow", "cheap", "greedy"):
             copy = BitHeap(cols={c: list(v) for c, v in heap.cols.items()}, offset=heap.offset)
             sig = self.heap_at_least(copy, threshold, plan=plan)
             out.append((len(self.netlist.luts) - mark, self._level[sig], plan))
@@ -395,7 +397,7 @@ class _Builder:
         threshold: int,
         absorb: bool = True,
         clamp: bool = True,
-        plan: str | None = "shallow",
+        plan: str = "shallow",
     ) -> int:
         """Signal that is 1 iff the heap's value is >= threshold.
 
@@ -410,13 +412,14 @@ class _Builder:
         column into the carry when that costs no extra carry bit (see _absorb_count). Both
         only ever remove heap bits or carry bits; turning them off gives the plain chain.
 
-        With `plan` ("shallow": least depth, then fewest LUTs; "cheap": fewest LUTs, then
-        least depth; needs `absorb`), the steps are not chosen greedily but planned for the
+        With `plan` "shallow" (least depth, then fewest LUTs) or "cheap" (fewest LUTs, then
+        least depth), and `absorb`, the steps are not chosen greedily but planned for the
         whole chain at once (see _plan_chain), which also allows steps that take only part
-        of a column. The greedy chain is the fallback when no plan fits into k-input LUTs.
+        of a column. The greedy chain ("greedy") is the fallback when no plan fits into
+        k-input LUTs.
         """
         threshold -= heap.offset
-        if plan and absorb:
+        if plan != "greedy" and absorb:
             out = self._planned_chain(heap, threshold, clamp, cheap=plan == "cheap")
             if out is not None:
                 return out
