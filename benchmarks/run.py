@@ -23,6 +23,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from suite import SUITE  # noqa: E402
+from yosys_baseline import load_baseline  # noqa: E402
 
 from dark_algorithms.ternary_lut import evaluate, random_network  # noqa: E402
 
@@ -40,27 +41,55 @@ def git_revision() -> str:
 
 
 def run_suite() -> list[dict]:
+    """Benchmark every case and attach the stored Yosys/ABC result for the same network."""
+    yosys = load_baseline()
     results = []
     for case in SUITE:
         net = random_network(case.layer_sizes, case.sparsity, np.random.default_rng(case.seed))
-        r = evaluate(net, k=case.k)
-        results.append({"case": case.name, "k": case.k, **r.to_dict()})
+        r = {"case": case.name, "k": case.k, **evaluate(net, k=case.k).to_dict()}
+        y = yosys.get(case.name)
+        r["yosys_lut_count"] = y["lut_count"] if y else None
+        r["yosys_depth"] = y["depth"] if y else None
+        # Below 1.0 means fewer LUTs than the open-source Yosys/ABC flow on the same network.
+        r["lut_ratio_vs_yosys"] = r["lut_count"] / y["lut_count"] if y else None
+        results.append(r)
     return results
+
+
+def versus_yosys(results: list[dict]) -> tuple[int, int] | None:
+    """Total LUTs of ours and of Yosys/ABC over the cases that have a Yosys result."""
+    covered = [r for r in results if r["yosys_lut_count"]]
+    if not covered:
+        return None
+    return sum(r["lut_count"] for r in covered), sum(r["yosys_lut_count"] for r in covered)
 
 
 def summary_table(results: list[dict]) -> str:
     lines = [
-        "| case | equivalent | LUTs | depth | dense baseline LUTs | LUT reduction |",
-        "|---|---|---:|---:|---:|---:|",
+        "| case | equivalent | LUTs | depth | Yosys/ABC LUTs | Yosys depth | vs Yosys |"
+        " dense baseline LUTs |",
+        "|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for r in results:
         check = ("yes (exhaustive)" if r["exhaustive"] else "yes") if r["equivalent"] else "**NO**"
+        if r["yosys_lut_count"]:
+            yl, yd = r["yosys_lut_count"], r["yosys_depth"]
+            vs = f"{r['lut_ratio_vs_yosys'] - 1:+.1%}"
+        else:
+            yl = yd = vs = "n/a"
         lines.append(
-            f"| {r['case']} | {check} | {r['lut_count']} | {r['depth']} | "
-            f"{r['baseline_lut_count']} | {r['lut_reduction']:.1%} |"
+            f"| {r['case']} | {check} | {r['lut_count']} | {r['depth']} | {yl} | {yd} | {vs} |"
+            f" {r['baseline_lut_count']} |"
         )
     total = sum(r["lut_count"] for r in results)
     lines.append(f"\nTotal LUTs: {total}")
+    vy = versus_yosys(results)
+    if vy:
+        ours, theirs = vy
+        lines.append(
+            f"Versus Yosys/ABC on the cases it finished: {ours} vs {theirs} LUTs "
+            f"({ours / theirs - 1:+.1%})"
+        )
     return "\n".join(lines)
 
 
@@ -102,10 +131,22 @@ def export_otlp(results: list[dict], revision: str) -> bool:
     meter.create_gauge("dark_algorithms.benchmark.run_info", unit="1").set(
         1.0, {"vcs.ref.head.revision": revision, "algorithm": ALGORITHM}
     )
+    yosys_gauges = {
+        "yosys_lut_count": meter.create_gauge(
+            "dark_algorithms.benchmark.yosys_lut_count", unit="{lut}"
+        ),
+        "yosys_depth": meter.create_gauge("dark_algorithms.benchmark.yosys_depth", unit="{level}"),
+        "lut_ratio_vs_yosys": meter.create_gauge(
+            "dark_algorithms.benchmark.lut_ratio_vs_yosys", unit="1"
+        ),
+    }
     for r in results:
         attrs = {"benchmark.case": r["case"], "algorithm": ALGORITHM, "lut.k": r["k"]}
         for key, gauge in gauges.items():
             gauge.set(float(r[key]), attrs)
+        for key, gauge in yosys_gauges.items():
+            if r[key] is not None:
+                gauge.set(float(r[key]), attrs)
     data = reader.get_metrics_data()
     exporter = OTLPMetricExporter()
     try:

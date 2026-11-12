@@ -9,6 +9,22 @@ benchmark, the eval, the simulator and CI, may be changed when that serves the g
 Compile sparse ternary neural networks into memory-free LUT circuits that are
 **correct**, **small** (LUT count) and **shallow** (logic depth), and keep improving them.
 
+Progress is measured against an outside reference, not only against our own earlier
+versions: the open-source Yosys/ABC flow synthesizing the same networks to the same
+LUT-only target. The headline number is total LUTs relative to Yosys/ABC (below 100% means
+we beat it). The stored Yosys results are in `benchmarks/yosys_baseline.json`.
+
+### Current priorities
+
+1. **Prove correctness formally.** Wide networks are checked on random vectors only. Use
+   Yosys (equivalence checking or SAT) or ABC `cec` to prove each compiled circuit equals the
+   behavioral Verilog from `benchmarks/yosys_baseline.py`, time-boxed per case, and report
+   which cases are proven.
+2. **Add a real-FPGA reference.** LUT-only counts ignore carry chains. Add a second baseline
+   with a vendor-style target (for example Yosys `synth_xilinx` or `synth_ecp5`, counting LUTs
+   and carry cells) and compare our circuits handed to the same flow.
+3. Then keep shrinking LUTs and depth, reporting the gap to Yosys/ABC in every pull request.
+
 Pipeline: `model.py` (ternary network) -> `compiler.py` -> `netlist.py` (what we produce)
 -> `simulator.py` -> `evaluate.py`. The compiler's module docstring lists known headroom.
 
@@ -36,7 +52,12 @@ progress table and the ideas ahead in the same pull request.
 
 ## Setup and commands
 
-- Install: `pip install -e ".[dev]"` (add `[telemetry]` to export metrics).
+- Install: `pip install -e ".[dev,yosys]"` (add `telemetry` to export metrics). Yosys comes
+  from PyPI as `yowasp-yosys`, a WebAssembly build: no system packages needed, but it only
+  sees files under its working directory.
+- Yosys baseline: `python benchmarks/yosys_baseline.py [--cases NAME ...]`. Regenerate and
+  commit `benchmarks/yosys_baseline.json` whenever the benchmark suite changes. Large cases
+  take many minutes (the 70%-sparse 256-input case over 9 minutes), so never run it per PR.
 - Check: `ruff check . && ruff format --check . && pytest -q`.
 - Benchmark: `python benchmarks/run.py --output results.json`; compare two runs with
   `python benchmarks/compare.py base.json head.json`.
