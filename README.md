@@ -79,8 +79,10 @@ all of its at most 64 input combinations to re-encode exactly the weighted sum o
 it replaces, so the neuron's sum can be rewritten step by step in terms of the counters'
 outputs without trusting how the compiler built them. Second, the remaining comparison
 logic is checked against "sum at least threshold" over every combination of those
-outputs with a binary decision diagram, a canonical form in which two functions are
-equal exactly when their diagrams are identical. Every benchmark network is proven this way
+outputs that the counters can actually produce (the three output bits of a six-input
+counter never read seven, and the comparison is free to do anything there), with a binary
+decision diagram, a canonical form in which two functions are equal exactly when their
+diagrams are identical. Every benchmark network is proven this way
 in about two seconds in total. A circuit that is no longer proven, or that disagrees with
 the network in simulation (every input for networks with up to 16 inputs, thousands of
 random inputs for larger ones), blocks the change.
