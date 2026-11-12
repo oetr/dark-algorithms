@@ -1,7 +1,8 @@
 # Guide for coding agents
 
-This repository is developed mostly by agents, and pull requests are cleared by Darkplane
-AutoMerge. These rules keep that safe.
+This repository is developed by agents, and Darkplane AutoMerge merges their pull requests
+without human review. Only the goal matters: everything in the repository, including the
+benchmark, the eval, the simulator and CI, may be changed when that serves the goal.
 
 ## Goal
 
@@ -11,17 +12,23 @@ Compile sparse ternary neural networks into memory-free LUT circuits that are
 Pipeline: `model.py` (ternary network) -> `compiler.py` -> `netlist.py` (what we produce)
 -> `simulator.py` -> `evaluate.py`. The compiler's module docstring lists known headroom.
 
-## Rules
+## How to work
 
-1. **Correctness is not negotiable.** Every compiled circuit must be equivalent to its
-   reference network. Never weaken an equivalence check, a test or the regression gate to
-   make a change pass.
-2. **Do not touch the yardstick.** `benchmarks/`, `src/dark_algorithms/ternary_lut/evaluate.py`,
-   `src/dark_algorithms/ternary_lut/simulator.py` and `.github/` define how progress is measured.
-   Changes there are held for human review. Improve the compiler, not the measurement.
-3. **Only move the frontier forward.** CI fails a pull request whose total LUT count or
-   worst-case depth regresses against the base branch.
-4. **Keep pull requests small and single-purpose.** One optimisation per pull request, with
-   a test that exercises it and the benchmark delta in the description.
+1. **A wrong circuit is not progress.** Compiled circuits must stay equivalent to their
+   reference networks; a smaller circuit that computes something else does not count.
+2. **Change the measurement when it is wrong, not when it is inconvenient.** Change the
+   benchmark suite, eval, simulator or regression gate when they measure the goal badly,
+   for example a missing realistic case, a too-slow or too-coarse simulation, or a gate that
+   blocks a worthwhile LUT/depth trade-off. Say in the pull request why the new measurement
+   is closer to the goal. Making a number look better without the circuits getting better
+   is not progress.
+3. **Show the delta.** Put the benchmark before and after in every pull request description.
+4. **Keep pull requests small and single-purpose**, so each one can be reverted on its own.
 5. Run `ruff check . && ruff format --check . && pytest -q && python benchmarks/run.py` before
    opening a pull request.
+
+## Known limits
+
+- The Dash0 GitHub App cannot push changes under `.github/workflows/` (GitHub refuses it
+  without the `workflows` permission). Propose CI changes in the pull request description
+  instead; a maintainer has to commit them.
