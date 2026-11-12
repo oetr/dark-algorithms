@@ -12,6 +12,7 @@ dependencies = ["numpy>=1.26"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
+yosys = ["yowasp-yosys>=0.40"]
 telemetry = [
   "opentelemetry-sdk>=1.27",
   "opentelemetry-exporter-otlp-proto-http>=1.27",

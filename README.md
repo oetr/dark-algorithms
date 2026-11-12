@@ -69,6 +69,26 @@ with a version that ignores sparsity.
 | Counters shared between neurons that read the same inputs | 19,140 | 17 |
 | Counting only as far as needed in the last step, choosing forms along the critical path | 18,777 | 17 |
 
+**Compared with free chip-design software.** Progress against our own earlier versions can
+hide that we are merely catching up. So every benchmark network is also built by Yosys/ABC,
+the standard open-source chip-design tools, under the same rules (small lookup tables only).
+The first version used more LUTs than Yosys/ABC on every network; today it uses fewer on
+every network Yosys/ABC finished:
+
+| Network | Ours | Yosys/ABC | Difference | Longest chain: ours / Yosys/ABC |
+|---|---:|---:|---:|---|
+| 16 inputs, 50% zero weights | 76 | 103 | −26% | 4 / 5 |
+| 64 inputs, 70% zero weights | 1,168 | 2,083 | −44% | 11 / 13 |
+| 256 inputs, 90% zero weights | 2,819 | 4,095 | −31% | 10 / 12 |
+| 256 inputs, 95% zero weights | 743 | 1,025 | −28% | 7 / 8 |
+| 256 inputs, 90% zero weights, 4-input LUTs | 5,219 | 6,328 | −18% | 16 / 18 |
+| 256 inputs, 70% zero weights | 8,752 | not finished | | 17 / – |
+| **Total where both finished** | **10,025** | **13,634** | **−26.5%** | |
+
+Real chips also have fast adder circuitry (carry chains) that this comparison does not use
+yet, and correctness of the largest networks is still checked by sampling rather than proven.
+Both are the next steps.
+
 **Ideas ahead.** Choosing the shared input groups better (covering every neuron's inputs as
 completely as possible, and sharing the later counting steps too), counting only as much as
 each binary position needs in every step of the tree and picking the best counter for each

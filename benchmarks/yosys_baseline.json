@@ -1,0 +1,37 @@
+{
+  "mlp-256-s90": {
+    "depth": 12,
+    "flow": "synth -flatten -lut 6",
+    "lut_count": 4095,
+    "seconds": 68.9,
+    "tool": "Yosys 0.70"
+  },
+  "mlp-256-s90-k4": {
+    "depth": 18,
+    "flow": "synth -flatten -lut 4",
+    "lut_count": 6328,
+    "seconds": 28.0,
+    "tool": "Yosys 0.70"
+  },
+  "mlp-256-s95": {
+    "depth": 8,
+    "flow": "synth -flatten -lut 6",
+    "lut_count": 1025,
+    "seconds": 8.7,
+    "tool": "Yosys 0.70"
+  },
+  "mlp-64-s70": {
+    "depth": 13,
+    "flow": "synth -flatten -lut 6",
+    "lut_count": 2083,
+    "seconds": 222.7,
+    "tool": "Yosys 0.70"
+  },
+  "tiny-exhaustive-s50": {
+    "depth": 5,
+    "flow": "synth -flatten -lut 6",
+    "lut_count": 103,
+    "seconds": 1.2,
+    "tool": "Yosys 0.70"
+  }
+}
