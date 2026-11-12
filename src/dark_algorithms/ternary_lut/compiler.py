@@ -317,7 +317,56 @@ class _Builder:
             nxt.extend(col, elems[i:])
         heap.cols, heap.offset = nxt.cols, nxt.offset
 
-    def heap_at_least(self, heap: BitHeap, threshold: int) -> int:
+    @staticmethod
+    def _carry_range(
+        q_lo: int, q_hi: int, v_hi: int, t_rest: int, delta: int, r_hi: int
+    ) -> tuple[int, int]:
+        """Range [lo, hi] of the next carry, clamped to the values that can change the output.
+
+        The next carry is q' = floor((q + v - t_low) / 2^delta) for the current carry q and the
+        step's bits v. The output is q' + rest >= t' with rest in [0, r_hi], so any q' >= t' is
+        as good as t' and any q' < t' - r_hi as good as t' - r_hi - 1: clamping to that range
+        never changes the output and can save carry bits (one LUT each).
+        """
+        t_low = t_rest & ((1 << delta) - 1)
+        t_next = t_rest >> delta
+        lo = max((q_lo - t_low) >> delta, t_next - r_hi - 1)
+        hi = min((q_hi + v_hi - t_low) >> delta, t_next)
+        return lo, hi
+
+    def _absorb_count(
+        self,
+        q_lo: int,
+        q_hi: int,
+        v_hi: int,
+        delta: int,
+        pool: Sequence[Elem],
+        d: int,
+        t_rest: int,
+        r_hi: int,
+        free: int,
+    ) -> int:
+        """How many bits of the next column (relative weight 2^d) a comparator step absorbs.
+
+        `delta`, `v_hi` and `r_hi` (the bits left in the heap, relative to 2^delta) describe
+        the step without absorbing. As many bits are absorbed as fit into the free LUT inputs
+        while the step needs no more carry bits than without them, so they leave the heap
+        for free. Absorbing more at the price of a carry bit was measured as worse.
+        """
+        lo, hi = self._carry_range(q_lo, q_hi, v_hi, t_rest, delta, r_hi)
+        base = (hi - lo).bit_length()
+        r_d = r_hi >> (d - delta)  # the remaining bits all sit at relative weight >= 2^d
+        best = 0
+        for a in range(1, min(free, len(pool)) + 1):
+            taken = sum(e.hi_value for e in pool[:a])
+            lo, hi = self._carry_range(q_lo, q_hi, v_hi + (taken << d), t_rest, d, r_d - taken)
+            if (hi - lo).bit_length() <= base:
+                best = a
+        return best
+
+    def heap_at_least(
+        self, heap: BitHeap, threshold: int, absorb: bool = True, clamp: bool = True
+    ) -> int:
         """Signal that is 1 iff the heap's value is >= threshold.
 
         Columns are consumed from the least significant one upwards. The state passed from
@@ -325,6 +374,11 @@ class _Builder:
         / 2^c), kept as an offset-binary number (often one bit, sometimes a constant). Each
         step spends one LUT per carry bit over the carry and as many whole columns as fit
         into k inputs; the last step compares directly and yields the neuron output.
+
+        With `clamp`, the carry is limited to the values that can still change the output
+        (see _carry_range), and with `absorb`, a step's free LUT inputs take bits of the next
+        column into the carry when that costs no extra carry bit (see _absorb_count). Both
+        only ever remove heap bits or carry bits; turning them off gives the plain chain.
         """
         k = self.netlist.k
         threshold -= heap.offset
@@ -368,11 +422,34 @@ class _Builder:
             if len(take) == len(cols):
                 return self.lut_from_truth(signals, values >= t_rest)
             delta = take[-1] + 1 - c
-            t_low = t_rest & ((1 << delta) - 1)
             v_hi = sum(e.hi_value << sh for e, sh in elems)
-            nq_lo = (q_lo - t_low) >> delta
-            nq_hi = (q_hi + v_hi - t_low) >> delta
-            next_q = ((values - t_low) >> delta) - nq_lo
+            left = cols[len(take) :]
+            r_hi = sum(e.hi_value << (col - c - delta) for col in left for e in heap.cols[col])
+            if absorb and used < k:
+                # Bits of the next column carry weight 2^d relative to column c, d >= delta,
+                # so they can join the new carry directly: with the carry taken at position
+                # d, floor((v + 2^d * b - t_low) / 2^d) just adds b to it. Free LUT inputs
+                # are filled that way when it costs no carry bit (see _absorb_count).
+                pool = heap.cols[left[0]]
+                d = left[0] - c
+                a = self._absorb_count(q_lo, q_hi, v_hi, delta, pool, d, t_rest, r_hi, k - used)
+                if a:
+                    taken = sum(e.hi_value for e in pool[:a])
+                    r_hi = (r_hi >> (d - delta)) - taken
+                    v_hi += taken << d
+                    delta = d
+                    elems = elems + [(e, d) for e in pool[:a]]
+                    heap.cols[left[0]] = pool[a:]
+                    signals = signals + [e.signal for e in pool[:a]]
+                    values = q_lo + elem_values(elems, first_column=n)
+                    if n:
+                        values = values + combinations(n + len(elems))[:, :n] @ weights
+            t_low = t_rest & ((1 << delta) - 1)
+            nq_lo, nq_hi = self._carry_range(q_lo, q_hi, v_hi, t_rest, delta, r_hi)
+            if not clamp:
+                nq_lo = (q_lo - t_low) >> delta
+                nq_hi = (q_hi + v_hi - t_low) >> delta
+            next_q = np.clip((values - t_low) >> delta, nq_lo, nq_hi) - nq_lo
             new_carry: list[tuple[int, int]] = []
             new_lo = nq_lo
             for j in range((nq_hi - nq_lo).bit_length()):
