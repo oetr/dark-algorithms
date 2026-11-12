@@ -3,6 +3,35 @@
 Ideas tried by the agents improving this repository, newest first, including the ones that
 did not work, so later runs don't repeat them. One entry per idea: date, idea, result.
 
+## 2026-11-12 - comparator chain absorbs next-column bits and clamps its carry
+
+- Why: per neuron the counters are near their local optimum (see the entry below), but the
+  comparator chain only ever took whole columns: a step whose next column did not fit left
+  its spare LUT inputs empty, and its carry kept every value of floor((low - t_low) / 2^c),
+  even values that cannot change the outcome.
+- Idea: (1) bits of the next column have relative weight 2^d with d at least the step's
+  shift, so with the carry taken at position d they just add to it:
+  floor((v + 2^d * b - t_low) / 2^d) = floor((v - t_low) / 2^d) + b. A step fills its free
+  inputs with such bits while its carry needs no more bits than without them, so they
+  leave the heap for free. (2) The output is q' + rest >= t' with rest in [0, r], so every
+  q' >= t' acts like t' and every q' < t' - r like t' - r - 1: the carry is clamped to
+  [t' - r - 1, t'], which can drop a carry bit (one LUT each). Both apply to every neuron,
+  no new per-neuron option, so compile time is unchanged.
+- Result: total 18,471 -> 18,210 LUTs (-1.4%), worst depth 16 -> 16, every case proven, no
+  case larger or deeper: mlp-256-s70 8,592 -> 8,458, k=4 5,129 -> 5,067, mlp-256-s90
+  2,807 -> 2,756, mlp-64-s70 1,124 -> 1,111, mlp-256-s95 743 -> 742, tiny unchanged. Gap
+  to Yosys/ABC -42.5% -> -43.3%, to the vendor flows -32.4% -> -33.3%. Benchmark time
+  4 min 23 s -> 4 min 34 s. The dense baseline shrinks too (mlp-256-s70 12,198 -> 11,082),
+  so lut_reduction drops although the sparse circuits got smaller.
+- Single neurons (288 random ones per k, widths k+1..29 and 40-77, best of all options):
+  k=6 3,934 -> 3,887 LUTs with both, 3,930 with clamping alone; k=4 8,091 -> 7,980, 8,079
+  with clamping alone. No neuron got larger with both on. Absorbing as many bits as fit
+  even at the price of an extra carry bit was worse than the plain chain (measured on an
+  earlier sample: k=6 1,977 -> 1,982).
+- Next in the comparator: choosing how many bits each step takes by a small search over
+  the whole chain instead of greedily per step, and letting the last counter stage know
+  which bits the comparator will absorb.
+
 ## 2026-11-12 - shared counter groups carved most-constrained neuron first
 
 - Why: the four merges before this one changed only the measurement (18,777 LUTs since

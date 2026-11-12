@@ -209,6 +209,64 @@ def test_heap_comparator_is_exact_for_every_threshold(k):
 
 
 @pytest.mark.parametrize("k", [3, 4, 5, 6])
+@pytest.mark.parametrize(("absorb", "clamp"), [(False, False), (True, False), (False, True)])
+def test_comparator_refinements_are_exact_for_every_threshold(k, absorb, clamp):
+    # Tall, uneven columns (6 bits of weight 1, 5 of weight 2, one inverted, 3 of weight 4,
+    # 2 of weight 8) so that steps have free inputs for next-column bits to fill.
+    n_inputs = 16
+    weights = np.array([1] * 6 + [2] * 5 + [4] * 3 + [8] * 2)
+    x = all_vectors(n_inputs).astype(np.int64)
+    value = x @ weights + (1 - 2 * x[:, 6]) * 2
+    for threshold in range(-1, 46, 2):
+        b = _Builder(k=k, num_inputs=n_inputs)
+        heap = BitHeap()
+        for i, w in enumerate(weights):
+            s = b.netlist.input_signal(i)
+            heap.extend(int(w).bit_length() - 1, [Elem(s, 1, 0) if i == 6 else Elem(s)])
+        b.compress(heap, max_height=min(k - 1, 4))
+        b.netlist.outputs = [b.heap_at_least(heap, threshold, absorb=absorb, clamp=clamp)]
+        out = simulate(b.netlist.sweep(), x).ravel()
+        assert (out == (value >= threshold)).all(), (k, absorb, clamp, threshold)
+
+
+def test_carry_is_clamped_to_values_that_matter():
+    # q' = floor((q + v - 1) / 2) for q in [0, 1], v in [0, 6], t_rest = 9 (t_low = 1):
+    # q' in [-1, 3], three carry bits. The next step needs q' + rest >= 4 with rest in
+    # [0, 1], so q' <= 2 all behave like 2: q' in [2, 3] is one carry bit.
+    lo, hi = _Builder._carry_range(q_lo=0, q_hi=1, v_hi=6, t_rest=9, delta=1, r_hi=1)
+    assert (lo, hi) == (2, 3)
+    # With plenty left to add, nothing is clamped.
+    assert _Builder._carry_range(0, 1, 6, 9, 1, r_hi=20) == (-1, 3)
+
+
+@pytest.mark.parametrize("k", [4, 6])
+def test_comparator_refinements_never_cost_luts(k):
+    # Across neuron widths, the refined comparator chain removes heap bits or carry bits for
+    # free, so each neuron's cheapest version never gets larger, and many get smaller.
+    rng = np.random.default_rng(3)
+    plain = refined = 0
+    for n in range(k + 1, 40, 2):
+        w = rng.choice(np.array([-1, 1]), size=n)
+        t = int(round(0.5 * w.sum())) + int(rng.integers(-1, 2))
+        best = {}
+        for refine in (False, True):
+            b = _Builder(k=k, num_inputs=n)
+            sig = [b.netlist.input_signal(i) for i in range(n)]
+            elems = [Elem(s, 1, 0) if wi < 0 else Elem(s) for s, wi in zip(sig, w, strict=True)]
+            lt = t + int((w < 0).sum())
+
+            def build(h, b=b, elems=elems, lt=lt, refine=refine):
+                heap = BitHeap(cols={0: list(elems)})
+                b.compress(heap, max_height=h)
+                return b.heap_at_least(heap, lt, absorb=refine, clamp=refine)
+
+            best[refine] = min(b.trial(lambda h=h: build(h))[0] for h in range(2, k + 1))
+        assert best[True] <= best[False], n
+        plain, refined = plain + best[False], refined + best[True]
+    assert refined < plain
+
+
+@pytest.mark.parametrize("k", [3, 4, 5, 6])
 def test_wide_neuron_matches_reference_for_every_threshold(k):
     rng = np.random.default_rng(5)
     w = rng.choice(np.array([-1, 1]), size=16)
