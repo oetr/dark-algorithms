@@ -3,6 +3,45 @@
 Ideas tried by the agents improving this repository, newest first, including the ones that
 did not work, so later runs don't repeat them. One entry per idea: date, idea, result.
 
+## 2026-11-12 - comparator chain planned as a whole, with partial-column steps
+
+- Why: the counters are at their information limit for value-preserving compression (a 6:3
+  counter removes one bit per LUT, a full adder half a bit per LUT at k=4), so only
+  threshold-aware logic can beat them, and that is the comparator chain. It was greedy
+  (as many whole columns as fit, then next-column bits) and could only ever take whole
+  columns, so a neuron a few literals wider than a LUT always paid for a counter first:
+  8 literals at k=6 took a 6:3 counter plus one LUT, 4 LUTs.
+- Idea: plan the chain with a memoised search over its steps (m whole columns, then a bits
+  of the next column, lowest arrival level first), counting one LUT per carry bit and the
+  real arrival levels. a > 0 with m = 0 is a step that takes only part of the lowest
+  column and does not shift the carry; with the clamp from the previous entry the carry
+  stays small near the end of the chain. 8 literals at k=6: six clamp to {<=1, 2, 3, >=4},
+  two LUTs, then one LUT over the carry and the last two literals: 3 LUTs, same depth.
+  Each compressor tree is tried with the shallowest plan, the cheapest plan and the old
+  greedy chain (built once, three chains tried on it), so every neuron's set of versions
+  contains the old one; neurons with at most 3k literals also get a version with no
+  counters at all. The carry's upper bound is tracked exactly instead of as all-ones.
+- Result: total 18,210 -> 18,034 LUTs (-1.0%), worst depth 16 -> 15, every case proven.
+  tiny 76 -> 71, mlp-64-s70 1,111 -> 1,105, mlp-256-s90 2,756 -> 2,706 and depth 10 -> 9,
+  mlp-256-s95 742 -> 729 and 7 -> 6, k=4 5,067 -> 4,956 and 16 -> 15, mlp-256-s70
+  8,458 -> 8,467 but 16 -> 15 (the compiler keeps the shallowest network, then the
+  smallest). Gap to Yosys/ABC -43.3% -> -43.8%, to the vendor flows -33.3% -> -34.6%.
+- Single neurons (fixed sample of 126 at k=6 and 132 at k=4, widths k+1..29 and 40..76,
+  central thresholds): cheapest versions 3,811 -> 3,777 (k=6) and 7,632 -> 7,520 (k=4);
+  shallowest versions' summed depth 531 -> 516 and 843 -> 823. Off-centre thresholds gain
+  much more (a 12-literal popcount >= 2 at k=6: 7 -> 5 LUTs), which trained networks
+  with skewed thresholds should profit from.
+- Cost: the first version took 17 minutes for the benchmark (3.3 million planner states
+  for mlp-64-s70 alone, most of them shared neurons re-planned per trial). One search now
+  yields both plans, column sums are precomputed, and planners are cached by heap across
+  trials and the four network builds: mlp-64-s70 138 s -> 32 s, the benchmark 7.2 minutes
+  here with the tests running alongside (4.5 before).
+- Not kept: letting the last counter stage leave column 0 k bits tall (the chain's first
+  step has no carry) as an extra per-neuron option: 0.4% fewer LUTs on single neurons
+  (k=6 4,895 -> 4,877, k=4 9,659 -> 9,624), not worth the extra trials on its own.
+- Measured, not pursued: a plain search over the old chain's step choices (whole columns
+  only) saves under 1% of the comparator, which is 8-17% of a neuron's LUTs.
+
 ## 2026-11-12 - comparator chain absorbs next-column bits and clamps its carry
 
 - Why: per neuron the counters are near their local optimum (see the entry below), but the

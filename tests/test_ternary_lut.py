@@ -229,6 +229,83 @@ def test_comparator_refinements_are_exact_for_every_threshold(k, absorb, clamp):
         assert (out == (value >= threshold)).all(), (k, absorb, clamp, threshold)
 
 
+@pytest.mark.parametrize("k", [3, 4, 5, 6])
+@pytest.mark.parametrize("plan", ["shallow", "cheap"])
+@pytest.mark.parametrize(("max_height", "clamp"), [(0, True), (2, True), (4, True), (4, False)])
+def test_planned_chain_is_exact_for_every_threshold(k, plan, max_height, clamp):
+    # Uneven columns (6 bits of weight 1, 5 of weight 2, one inverted, 3 of weight 4, 2 of
+    # weight 8), compressed or handed to the chain as they are (max_height 0), so that plans
+    # use whole columns, next-column bits and partial columns.
+    n_inputs = 16
+    weights = np.array([1] * 6 + [2] * 5 + [4] * 3 + [8] * 2)
+    x = all_vectors(n_inputs).astype(np.int64)
+    value = x @ weights + (1 - 2 * x[:, 6]) * 2
+    for threshold in range(-1, 46, 2):
+        b = _Builder(k=k, num_inputs=n_inputs)
+        heap = BitHeap()
+        for i, w in enumerate(weights):
+            s = b.netlist.input_signal(i)
+            heap.extend(int(w).bit_length() - 1, [Elem(s, 1, 0) if i == 6 else Elem(s)])
+        if max_height:
+            b.compress(heap, max_height=min(k - 1, max_height))
+        b.netlist.outputs = [b.heap_at_least(heap, threshold, clamp=clamp, plan=plan)]
+        out = simulate(b.netlist.sweep(), x).ravel()
+        assert (out == (value >= threshold)).all(), (k, plan, max_height, clamp, threshold)
+
+
+@pytest.mark.parametrize(("k", "n", "luts", "depth"), [(6, 8, 3, 2), (4, 6, 3, 2)])
+def test_partial_column_steps_shrink_small_neurons(k, n, luts, depth):
+    # popcount >= n / 2 over a few more bits than fit in a LUT. The first step takes k bits
+    # of the column and keeps only the carry values that can still change the output
+    # (8 bits at k=6: six bits clamp to {<=1, 2, 3, >=4}, two carry bits), so no counter is
+    # needed: 8 inputs at k=6 took 4 LUTs and 6 inputs at k=4 took 4 before.
+    x = all_vectors(n)
+    b = _Builder(k=k, num_inputs=n)
+    t = n // 2 + (n % 2)
+    out = b.neuron([(b.netlist.input_signal(i), 1) for i in range(n)], t)
+    b.netlist.outputs = [out]
+    nl = b.netlist.sweep()
+    assert (simulate(nl, x).ravel() == (x.sum(axis=1) >= t)).all()
+    assert (nl.lut_count(), nl.depth()) == (luts, depth)
+
+
+@pytest.mark.parametrize("k", [4, 6])
+def test_planned_chains_never_make_a_neuron_worse(k):
+    # The greedy chain stays one of the candidates, so each neuron's cheapest version and its
+    # shallowest version are never worse than with the greedy chain alone; across widths and
+    # thresholds many get smaller.
+    rng = np.random.default_rng(7)
+    greedy_total = planned_total = 0
+    for n in range(k + 1, 3 * k + 4):
+        w = rng.choice(np.array([-1, 1]), size=n)
+        for t in (1, int(round(0.5 * w.sum())), n - 2):
+            b = _Builder(k=k, num_inputs=n)
+            sig = [b.netlist.input_signal(i) for i in range(n)]
+            elems = [Elem(s, 1, 0) if wi < 0 else Elem(s) for s, wi in zip(sig, w, strict=True)]
+            lt = t + int((w < 0).sum())
+
+            def prepare(h, elems=elems, b=b):
+                heap = BitHeap(cols={0: list(elems)})
+                if h:
+                    b.compress(heap, max_height=h)
+                return heap
+
+            tried = [r for h in range(k + 1) for r in b.trial_chains(lambda h=h: prepare(h), lt)]
+            greedy = [r for r in tried if r[2] == "greedy"]
+
+            def cheapest(rs):
+                return min((r[0], r[1]) for r in rs)
+
+            def shallowest(rs):
+                return min((r[1], r[0]) for r in rs)
+
+            assert cheapest(tried) <= cheapest(greedy), (n, t)
+            assert shallowest(tried) <= shallowest(greedy), (n, t)
+            greedy_total += cheapest(greedy)[0]
+            planned_total += cheapest(tried)[0]
+    assert planned_total < greedy_total
+
+
 def test_carry_is_clamped_to_values_that_matter():
     # q' = floor((q + v - 1) / 2) for q in [0, 1], v in [0, 6], t_rest = 9 (t_low = 1):
     # q' in [-1, 3], three carry bits. The next step needs q' + rest >= 4 with rest in

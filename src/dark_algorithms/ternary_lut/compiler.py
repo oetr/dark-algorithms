@@ -23,6 +23,14 @@ Strategy:
   carry bit, and the carry is clamped to the values that can still change the outcome
   (anything at or above the remaining threshold, or too low to reach it with what is
   left, is folded together), which can save carry bits.
+* The chain is planned as a whole rather than step by step: a small memoised search over
+  the steps (how many whole columns, how many bits of the next column) also allows steps
+  that take only part of the lowest column without shifting the carry, which pays off
+  near the end of the chain where the clamped carry stays small. For a neuron only a few
+  literals wider than a LUT this replaces the counters altogether (8 literals at k=6:
+  six literals clamp to the four carry values {<=1, 2, 3, >=4}, two LUTs, then one LUT
+  for the rest; the tree needed four). Each compressor tree is tried with the shallowest
+  plan, the cheapest plan and the old greedy chain, so no version is worse than before.
 * Counter shapes: a column's short last group (fewer than k bits removes few bits per
   LUT) can be filled with bits of the next column, a two-column counter such as (1,5;3);
   and when a k-bit counter removes less than one bit per two LUTs (k=4), columns can be
@@ -36,7 +44,7 @@ Strategy:
   stages is the same as Wallace's.
 * Tall columns mean fewer counters but a longer chain, so every neuron is built for each
   target column height 2..k and each applicable counter shape, with and without the lazy
-  last stage.
+  last stage, and, when it has at most 3k literals, with no counters at all.
 * Counters shared across neurons: neurons of one layer that contain the same k literals
   (or all of them inverted: the count is then g - c, i.e. the counter's bits inverted
   plus a constant, which folds into the reading LUTs) read one shared k-input counter
@@ -68,11 +76,14 @@ Known headroom, roughly in order of expected payoff:
     network) are open,
   - GPC shapes chosen per column by a small search instead of the greedy fill (a lazy
     schedule for every stage, not just the last, was tried and only saved 0.3%, see
-    JOURNAL.md),
+    JOURNAL.md), and a last counter stage that knows which bits the planned chain will
+    take (a per-column target that lets column 0 stay k bits tall saved only 0.4% per
+    neuron),
   - exact synthesis for small cones,
   - required levels from a true backward timing pass over the final netlist instead of
-    the first pass's paths, a shared-neuron trial cache (the benchmark now takes ~4.5
-    minutes), and trading depth for LUTs beyond the shallowest network.
+    the first pass's paths, a shared-neuron trial cache (the benchmark now takes ~7
+    minutes), and trading depth for LUTs beyond the shallowest network (mlp-256-s70 is
+    now one level shallower than before at 9 more LUTs).
 
 Setting `prune_zeros=False` compiles every weight, zero or not, as if the
 hardware could not exploit sparsity. It is the baseline the eval compares against.
@@ -80,6 +91,7 @@ hardware could not exploit sparsity. It is the baseline the eval compares agains
 
 from __future__ import annotations
 
+import itertools
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from functools import cache
@@ -152,11 +164,12 @@ class BitHeap:
 
 
 class _Builder:
-    def __init__(self, k: int, num_inputs: int) -> None:
+    def __init__(self, k: int, num_inputs: int, plans: dict | None = None) -> None:
         self.netlist = Netlist(k=k, num_inputs=num_inputs)
         self._cache: dict[tuple[tuple[int, ...], int], int] = {}
         self._level = [0] * self.netlist.first_lut_signal  # logic depth of every signal
         self._added: list[tuple[tuple[int, ...], int]] = []  # cache keys in creation order
+        self._plans: dict = plans if plans is not None else {}  # comparator planners by heap
 
     def lut(self, inputs: Sequence[int], fn: Callable[[tuple[int, ...]], int]) -> int:
         """Add a LUT computing fn over the given input signals; returns its output signal."""
@@ -198,6 +211,28 @@ class _Builder:
         cost = (len(self.netlist.luts) - mark, [self._level[s] for s in outs])
         self._undo(mark)
         return cost
+
+    def trial_chains(
+        self, prepare: Callable[[], BitHeap], threshold: int
+    ) -> list[tuple[int, int, str]]:
+        """Build a heap with `prepare` once and try every comparator chain on it.
+
+        Returns (new LUTs, output level, plan) for the shallowest and the cheapest planned
+        chain and the greedy one (see heap_at_least), then undoes everything; the compressor
+        tree is built once for all three. Keeping the greedy chain means no neuron version
+        is ever worse than it was before chains were planned.
+        """
+        mark = len(self.netlist.luts)
+        heap = prepare()
+        middle = len(self.netlist.luts)
+        out = []
+        for plan in ("shallow", "cheap", "greedy"):
+            copy = BitHeap(cols={c: list(v) for c, v in heap.cols.items()}, offset=heap.offset)
+            sig = self.heap_at_least(copy, threshold, plan=plan)
+            out.append((len(self.netlist.luts) - mark, self._level[sig], plan))
+            self._undo(middle)
+        self._undo(mark)
+        return out
 
     def level(self, signal: int) -> int:
         return self._level[signal]
@@ -271,6 +306,7 @@ class _Builder:
         bits each column has in excess does just that (see _stage), and otherwise falls back
         to a full Wallace stage, so the stage count does not change.
         """
+
         while heap.max_height() > max_height:
             if lazy:
                 mark = len(self.netlist.luts)
@@ -369,7 +405,12 @@ class _Builder:
         return best
 
     def heap_at_least(
-        self, heap: BitHeap, threshold: int, absorb: bool = True, clamp: bool = True
+        self,
+        heap: BitHeap,
+        threshold: int,
+        absorb: bool = True,
+        clamp: bool = True,
+        plan: str = "shallow",
     ) -> int:
         """Signal that is 1 iff the heap's value is >= threshold.
 
@@ -383,9 +424,19 @@ class _Builder:
         (see _carry_range), and with `absorb`, a step's free LUT inputs take bits of the next
         column into the carry when that costs no extra carry bit (see _absorb_count). Both
         only ever remove heap bits or carry bits; turning them off gives the plain chain.
+
+        With `plan` "shallow" (least depth, then fewest LUTs) or "cheap" (fewest LUTs, then
+        least depth), and `absorb`, the steps are not chosen greedily but planned for the
+        whole chain at once (see _plan_chain), which also allows steps that take only part
+        of a column. The greedy chain ("greedy") is the fallback when no plan fits into
+        k-input LUTs.
         """
-        k = self.netlist.k
         threshold -= heap.offset
+        if plan != "greedy" and absorb:
+            out = self._planned_chain(heap, threshold, clamp, cheap=plan == "cheap")
+            if out is not None:
+                return out
+        k = self.netlist.k
         c = 0
         carry: list[tuple[int, int]] = []  # (signal, bit position) of q - q_lo
         q_lo = 0
@@ -464,6 +515,186 @@ class _Builder:
                     new_carry.append((sig, j))
             carry, q_lo, c = new_carry, new_lo, c + delta
 
+    def _plan_chain(
+        self,
+        order: tuple[int, ...],
+        levels: tuple[tuple[int, ...], ...],
+        his: tuple[tuple[int, ...], ...],
+        threshold: int,
+        clamp: bool,
+    ) -> Callable[..., tuple[tuple[int, int, object], tuple[int, int, object]]]:
+        """Plan a comparator chain over fixed heap bits; returns a memoised planner.
+
+        The heap's columns `order` hold bits with the given arrival levels (ascending within
+        a column) and maximum values. A step reads the carry, m whole columns and a bits of
+        the column after them (the lowest-level ones). With a > 0 the carry is taken at that
+        column's position d, so the a bits just add to it (as in _absorb_count); with m = 0
+        this is a step that takes only part of the lowest column and does not shift the
+        carry at all, which pays off when few bits are left and the clamped carry stays
+        small (an 8-input threshold at k=6: six inputs give four carry values that matter,
+        two LUTs, then one LUT over the carry and the last two inputs). Each step costs one
+        LUT per carry bit and the last step one LUT.
+
+        planner(c, q_lo, q_hi, carry_level, pos, consumed) gives two plans for the chain
+        from that state as (output level, LUTs, move): the shallowest (then fewest LUTs) and
+        the cheapest (then least depth). A move is (m, a), 0 or 1 for a constant output, or
+        None when no chain fits into k inputs. `pos` and `consumed` say how far the columns
+        are used up: columns before index pos entirely, column pos up to bit `consumed`.
+        Planners are cached by heap, since trials and passes meet the same heaps again.
+        """
+        key = (order, levels, his, threshold, clamp)
+        if key in self._plans:
+            return self._plans[key]
+        k = self.netlist.k
+        ncol = len(order)
+        none = (1 << 30, 1 << 30, None)
+        # prefix[i][s]: value of column i's first s bits; above[i]: absolute value of every
+        # bit in columns i.., so the value left from (pos, consumed) is exact at any column.
+        prefix = [list(itertools.accumulate(h, initial=0)) for h in his]
+        above = [0] * (ncol + 1)
+        for i in range(ncol - 1, -1, -1):
+            above[i] = above[i + 1] + (prefix[i][-1] << order[i])
+
+        def rest_value(pos: int, consumed: int, base: int) -> int:
+            if pos >= ncol:
+                return 0
+            return (above[pos] - (prefix[pos][consumed] << order[pos])) >> base
+
+        @cache
+        def go(c: int, q_lo: int, q_hi: int, qlev: int, pos: int, consumed: int):
+            t_rest = threshold >> c
+            if q_lo >= t_rest:
+                return (0, 0, 1), (0, 0, 1)
+            if rest_value(pos, consumed, c) + q_hi < t_rest:
+                return (0, 0, 0), (0, 0, 0)
+            nb = (q_hi - q_lo).bit_length()
+            if pos >= ncol:
+                final = (1 + qlev, 1, (0, 0)) if nb <= k else none
+                return final, final
+            shallow = cheap = none
+            used, v, lev = nb, 0, qlev if nb else 0
+            for m in range(ncol - pos + 1):
+                if m:
+                    i = pos + m - 1
+                    s = consumed if m == 1 else 0
+                    used += len(levels[i]) - s
+                    if used > k:
+                        break
+                    v += (prefix[i][-1] - prefix[i][s]) << (order[i] - c)
+                    lev = max(lev, levels[i][-1])
+                    if i == ncol - 1:
+                        final = (1 + lev, 1, (m, 0))
+                        shallow = min(shallow, final, key=lambda x: (x[0], x[1]))
+                        cheap = min(cheap, final, key=lambda x: (x[1], x[0]))
+                        break
+                j = pos + m
+                s = consumed if m == 0 else 0
+                d = order[j] - c
+                for a in range(0 if m else 1, min(k - used, len(levels[j]) - s) + 1):
+                    if a:
+                        delta = d
+                        va = v + ((prefix[j][s + a] - prefix[j][s]) << d)
+                        la = max(lev, levels[j][s + a - 1])
+                        npos, ncons = (j, s + a) if s + a < len(levels[j]) else (j + 1, 0)
+                    else:
+                        delta = order[j - 1] + 1 - c
+                        va, la, npos, ncons = v, lev, j, s
+                    r = rest_value(npos, ncons, c + delta)
+                    if clamp:
+                        lo, hi = self._carry_range(q_lo, q_hi, va, t_rest, delta, r)
+                    else:
+                        t_low = t_rest & ((1 << delta) - 1)
+                        lo, hi = (q_lo - t_low) >> delta, (q_hi + va - t_low) >> delta
+                    cost = (hi - lo).bit_length()
+                    sub_shallow, sub_cheap = go(
+                        c + delta, lo, hi, 1 + la if cost else 0, npos, ncons
+                    )
+                    for sub, best, rank in (
+                        (sub_shallow, "shallow", lambda x: (x[0], x[1])),
+                        (sub_cheap, "cheap", lambda x: (x[1], x[0])),
+                    ):
+                        if sub[2] is None:
+                            continue
+                        cand = (sub[0], cost + sub[1], (m, a)) if sub[0] else (0, 0, (m, a))
+                        if best == "shallow":
+                            shallow = min(shallow, cand, key=rank)
+                        else:
+                            cheap = min(cheap, cand, key=rank)
+            return shallow, cheap
+
+        self._plans[key] = go
+        return go
+
+    def _planned_chain(
+        self, heap: BitHeap, threshold: int, clamp: bool, cheap: bool = False
+    ) -> int | None:
+        """heap_at_least along a planned chain (see _plan_chain); None if no plan fits.
+
+        `threshold` already has the heap's offset subtracted.
+        """
+        order = [col for col in sorted(heap.cols) if heap.cols[col]]
+        bits = [sorted(heap.cols[col], key=lambda e: self._level[e.signal]) for col in order]
+        levels = tuple(tuple(self._level[e.signal] for e in b) for b in bits)
+        his = tuple(tuple(e.hi_value for e in b) for b in bits)
+        planner = self._plan_chain(tuple(order), levels, his, threshold, clamp)
+        which = 1 if cheap else 0
+        c, q_lo, q_hi, qlev, pos, consumed = 0, 0, 0, 0, 0, 0
+        carry: list[tuple[int, int]] = []  # (signal, bit position) of q - q_lo
+        if planner(c, q_lo, q_hi, qlev, pos, consumed)[which][2] is None:
+            return None
+        while True:
+            move = planner(c, q_lo, q_hi, qlev, pos, consumed)[which][2]
+            if move is None:  # cannot happen: real carries are never wider than planned
+                raise AssertionError("comparator plan lost its way")
+            if move in (0, 1):
+                return CONST1 if move else CONST0
+            m, a = move
+            t_rest = threshold >> c
+            segs = [(i, consumed if i == pos else 0) for i in range(pos, len(order))]
+            elems = [(e, order[i] - c) for i, s in segs[:m] for e in bits[i][s:]]
+            if a:
+                j, s = segs[m]
+                d = order[j] - c
+                elems += [(e, d) for e in bits[j][s : s + a]]
+            n = len(carry)
+            signals = [sig for sig, _ in carry] + [e.signal for e, _ in elems]
+            values = q_lo + elem_values(elems, first_column=n)
+            if n:
+                weights = np.array([1 << j for _, j in carry], dtype=np.int64)
+                values = values + combinations(n + len(elems))[:, :n] @ weights
+            if m == len(segs):
+                return self.lut_from_truth(signals, values >= t_rest)
+            if a:
+                delta = d
+                pos, consumed = (j, s + a) if s + a < len(bits[j]) else (j + 1, 0)
+            else:
+                delta = order[segs[m - 1][0]] + 1 - c
+                pos, consumed = segs[m][0], 0
+            v_hi = sum(e.hi_value << sh for e, sh in elems)
+            r = sum(
+                sum(his[i][consumed if i == pos else 0 :]) << (order[i] - c - delta)
+                for i in range(pos, len(order))
+            )
+            t_low = t_rest & ((1 << delta) - 1)
+            if clamp:
+                nq_lo, nq_hi = self._carry_range(q_lo, q_hi, v_hi, t_rest, delta, r)
+            else:
+                nq_lo, nq_hi = (q_lo - t_low) >> delta, (q_hi + v_hi - t_low) >> delta
+            next_q = np.clip((values - t_low) >> delta, nq_lo, nq_hi) - nq_lo
+            new_carry: list[tuple[int, int]] = []
+            new_lo = nq_lo
+            for j in range((nq_hi - nq_lo).bit_length()):
+                sig = self.lut_from_truth(signals, (next_q >> j) & 1 == 1)
+                if sig == CONST1:
+                    new_lo += 1 << j
+                elif sig != CONST0:
+                    new_carry.append((sig, j))
+            step_level = 1 + max((self._level[sig] for sig in signals), default=0)
+            carry, c = new_carry, c + delta
+            q_lo = new_lo
+            q_hi = min(nq_hi, new_lo + sum(1 << j for _, j in new_carry))
+            qlev = step_level if new_carry else 0
+
     # -- neurons ----------------------------------------------------------------------------
 
     def shared_counter(self, group: SharedGroup, current: Sequence[int]) -> BitHeap:
@@ -512,10 +743,15 @@ class _Builder:
         elems = [Elem(s, 1, 0) if w < 0 else Elem(s, 0, 1 if w > 0 else 0) for s, w in terms]
         literal_threshold = threshold + sum(1 for _, w in terms if w < 0)
 
-        def build(max_height: int, gpc: bool, group_size: int, lazy: bool) -> int:
+        def prepare(max_height: int, gpc: bool, group_size: int, lazy: bool) -> BitHeap:
             heap = BitHeap(cols={0: list(elems)})
-            self.compress(heap, max_height, gpc=gpc, group_size=group_size, lazy=lazy)
-            return self.heap_at_least(heap, literal_threshold)
+            if max_height:
+                self.compress(heap, max_height, gpc=gpc, group_size=group_size, lazy=lazy)
+            return heap
+
+        def build(max_height: int, gpc: bool, group_size: int, lazy: bool, plan: str) -> int:
+            heap = prepare(max_height, gpc, group_size, lazy)
+            return self.heap_at_least(heap, literal_threshold, plan=plan)
 
         # Tall columns mean fewer counter LUTs but a longer comparator chain, and the counter
         # shape that pays off depends on the fan-in, so try the combinations and keep the best.
@@ -532,10 +768,20 @@ class _Builder:
             for gpc in gpcs
             for h in range(2, k + 1)
         ]
+        if len(elems) <= 3 * k:
+            # No counters at all: the planned comparator chain takes the literals directly
+            # (max_height 0), which wins for neurons only a few literals wider than a LUT.
+            options.append((0, False, 0, False))
         key = (tuple(terms), threshold, tuple(self._level[s] for s, _ in terms))
         tried = costs.get(key) if costs is not None else None
         if tried is None:
-            tried = [(*self.trial(lambda o=o: build(*o)), o) for o in options]
+            tried = [
+                (luts, level, (*o, plan))
+                for o in options
+                for luts, level, plan in self.trial_chains(
+                    lambda o=o: prepare(*o), literal_threshold
+                )
+            ]
             if costs is not None:
                 costs[key] = tried
         by_depth = min(tried, key=lambda t: (t[1], t[0], t[2]))
@@ -567,9 +813,9 @@ class _Builder:
         elems = [Elem(s, 1, 0) if w < 0 else Elem(s, 0, 1 if w > 0 else 0) for s, w in terms]
         literal_threshold += sum(1 for _, w in terms if w < 0)
 
-        def build(
+        def prepare(
             max_height: int, gpc: bool, group_size: int, first_stage: bool, lazy: bool
-        ) -> int:
+        ) -> BitHeap:
             heap = BitHeap(cols={0: list(elems)} if elems else {})
             if first_stage and len(elems) >= 3:
                 self.compress(heap, max_height=len(elems) - 1, group_size=group_size)
@@ -585,8 +831,20 @@ class _Builder:
                     for col, bits in counter.cols.items():
                         heap.extend(col, [Elem(e.signal, e.hi, e.lo) for e in bits])
                         heap.offset -= len(bits) << col
-            self.compress(heap, max_height, gpc=gpc, group_size=group_size, lazy=lazy)
-            return self.heap_at_least(heap, literal_threshold)
+            if max_height:
+                self.compress(heap, max_height, gpc=gpc, group_size=group_size, lazy=lazy)
+            return heap
+
+        def build(
+            max_height: int,
+            gpc: bool,
+            group_size: int,
+            first_stage: bool,
+            lazy: bool,
+            plan: str,
+        ) -> int:
+            heap = prepare(max_height, gpc, group_size, first_stage, lazy)
+            return self.heap_at_least(heap, literal_threshold, plan=plan)
 
         outs = k.bit_length()
         group_sizes = (0, 3) if 2 * (k - outs) < outs else (0,)
@@ -599,8 +857,15 @@ class _Builder:
             for gpc in gpcs
             for h in range(2, k + 1)
         ]
+        bits = len(elems) + sum(len(v) for c, _, _ in shared for v in c.cols.values())
+        if bits <= 3 * k:
+            options.append((0, False, 0, False, False))
         limit = depth_limit if depth_limit is not None else 1 << 30
-        costs = [(*self.trial(lambda o=o: build(*o)), o) for o in options]
+        costs = [
+            (luts, level, (*o, plan))
+            for o in options
+            for luts, level, plan in self.trial_chains(lambda o=o: prepare(*o), literal_threshold)
+        ]
         fitting = [c for c in costs if c[1] <= limit]
         if not fitting:
             return None
@@ -807,16 +1072,19 @@ def compile_network(
     if k < 3:
         raise ValueError("k must be at least 3 (the counters need 3-input LUTs)")
     costs: dict = {}
+    plans: dict = {}  # comparator planners, shared by every build of this network
     policies = (False, True) if share_counters else (None,)
     best = None
     for per_neuron in policies:
         share = per_neuron is not None
-        first, signals = _compile(network, k, prune_zeros, bool(per_neuron), share, costs)
+        first, signals = _compile(
+            network, k, prune_zeros, bool(per_neuron), share, costs, plans=plans
+        )
         down = _paths_to_outputs(first.netlist)
         depth = max((first.level(s) for s in first.netlist.outputs), default=0)
         required = [depth - down[s] for s in signals]
         second, second_signals = _compile(
-            network, k, prune_zeros, bool(per_neuron), share, costs, required
+            network, k, prune_zeros, bool(per_neuron), share, costs, required, plans=plans
         )
         for b, sigs in ((first, signals), (second, second_signals)):
             b.netlist.layer_outputs = _split_layers(network, sigs)
@@ -837,6 +1105,7 @@ def _compile(
     share: bool,
     costs: dict,
     required: Sequence[int] | None = None,
+    plans: dict | None = None,
 ) -> tuple[_Builder, list[int]]:
     """Build the network layer by layer; returns the builder and every neuron's output signal.
 
@@ -844,7 +1113,7 @@ def _compile(
     number n (counting through all layers) gets its cheapest version within level
     required[n], and shared neurons are held to that level too.
     """
-    b = _Builder(k, network.num_inputs)
+    b = _Builder(k, network.num_inputs, plans)
     current = [b.netlist.input_signal(i) for i in range(network.num_inputs)]
     signals: list[int] = []
     for layer in network.layers:
