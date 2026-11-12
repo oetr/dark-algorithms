@@ -31,10 +31,13 @@ disappears from the circuit. The sparser the network, the smaller the circuit ca
    then asks only "are at least T of these bits 1?".
 4. The bits are counted by a tree of small counters, each squeezing up to six bits into a
    three-bit count, one LUT level per step, until only a few bits per binary position remain.
+   A counter that would be left half empty also reads bits from the next binary position,
+   so it removes as many bits per LUT as a full one. With 4-input LUTs, where a four-bit
+   counter is wasteful, the bits can instead be counted in groups of three (full adders).
 5. A short chain of LUTs compares that count with the threshold and directly produces the
    neuron's yes/no output, without ever building the full sum.
-6. For every neuron, several tree shapes are tried and the cheapest is kept; identical LUTs
-   are shared and unused ones removed.
+6. For every neuron, several tree shapes and counter kinds are tried and the cheapest is
+   kept; identical LUTs are shared and unused ones removed.
 
 **How correctness is checked.** Every circuit is simulated and its outputs compared with the
 original network: on every possible input for networks with up to 16 inputs, and on
@@ -50,11 +53,12 @@ with a version that ignores sparsity.
 |---|---:|---:|
 | First version: partial sums added with adder chains | 43,424 | 31 |
 | Counting trees with a threshold comparator | 24,107 | 19 |
+| Counters spanning two binary positions, full adders for 4-input LUTs | 22,481 | 17 |
 
-**Ideas ahead.** Counters that read two binary positions at once, sharing counters between
-neurons that read the same inputs, exactly optimal circuits for small neurons, choosing
-circuit shapes for the whole network's longest path, and benchmarks with networks trained on
-real tasks.
+**Ideas ahead.** Counting only as much as each binary position needs and picking the best
+counter for each position by search, sharing counters between neurons that read the same
+inputs, exactly optimal circuits for small neurons, choosing circuit shapes for the whole
+network's longest path, and benchmarks with networks trained on real tasks.
 
 ## How it improves itself
 
