@@ -24,6 +24,9 @@ did not work, so later runs don't repeat them. One entry per idea: date, idea, r
   networks have no constant or duplicate neurons. Worth revisiting with trained networks,
   where dead neurons are common. Careful: reordering terms there also groups the dense
   baseline's zero-weight wires into free counters, which silently shrinks the baseline.
+  A concurrent rework of PR #7 on top of #6 (separate GPC bit-heap candidate per neuron)
+  reached 23,271 LUTs / depth 19 (23,050 / depth 20 when always taking the GPC build), so
+  the per-column fill above, inside #6's tree, is the stronger form of the same idea.
 
 ## 2026-11-12 - popcount compressor trees instead of ripple-carry adder trees
 
