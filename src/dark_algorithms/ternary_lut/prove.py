@@ -289,12 +289,59 @@ def _solve_group(
     return {o: ai for ai, (o, _) in zip(a, columns, strict=True) if ai}, d
 
 
+def _group_image(netlist: Netlist, outs: list[int], ins: list[int]) -> set[tuple[int, ...]]:
+    """Every value the LUTs `outs`, which read only `ins`, take together over all 2^len(ins) rows.
+
+    Whatever values the inputs really take, the outputs always form one of these tuples.
+    """
+    first = netlist.first_lut_signal
+    pos = {sig: b for b, sig in enumerate(ins)}
+    image = set()
+    for r in range(1 << len(ins)):
+        row = []
+        for o in outs:
+            lut = netlist.luts[o - first]
+            idx = sum((r >> pos[i] & 1) << j for j, i in enumerate(lut.inputs))
+            row.append(lut.table >> idx & 1)
+        image.add(tuple(row))
+    return image
+
+
+def _care_set(
+    bdd: Bdd, netlist: Netlist, groups: list[tuple[list[int], list[int]]], var_of: dict[int, int]
+) -> int:
+    """BDD of the heap values the replaced groups can produce at all (see prove_equivalence).
+
+    A replaced counter's outputs are BDD variables of the comparator check, but not free
+    ones: a 6-input counter never outputs 7, for example, and a compiler that knows the
+    counter's range may build a comparator that differs from the threshold there. Whatever
+    the circuit's inputs, each group's outputs lie in its image, so the values of all groups
+    together lie in the product of their images: checking the comparator only there is
+    still sound.
+    """
+    care = TRUE
+    for outs, ins in groups:
+        outs = [o for o in outs if o in var_of]
+        if not outs:
+            continue
+        group = FALSE
+        for row in _group_image(netlist, outs, ins):
+            term = TRUE
+            for o, bit in zip(outs, row, strict=True):
+                v = bdd.var(var_of[o])
+                term = bdd.ite(term, v if bit else bdd.ite(v, FALSE, TRUE), FALSE)
+            group = bdd.ite(group, TRUE, term)
+        care = bdd.ite(care, group, FALSE)
+    return care
+
+
 def _reduce_heap(
     netlist: Netlist, root: int, cut: set[int], coef: dict[int, int]
-) -> tuple[dict[int, int], int, int]:
+) -> tuple[dict[int, int], int, list[tuple[list[int], list[int]]]]:
     """Replace counters in root's cone by their outputs while the heap value stays the same.
 
-    Returns the new heap coefficients, the constant it gained and how many groups it replaced.
+    Returns the new heap coefficients, the constant it gained and the replaced groups as
+    (outputs, inputs).
     """
     first = netlist.first_lut_signal
     coef = dict(coef)
@@ -307,7 +354,7 @@ def _reduce_heap(
         groups.setdefault(frozenset(ins), []).append(s)
         for i in ins:
             readers.setdefault(i, set()).add(s)
-    replaced = 0
+    replaced: list[tuple[list[int], list[int]]] = []
     for key in sorted(groups, key=lambda g: min(groups[g])):
         outs = groups[key]
         ins = sorted(key)
@@ -324,7 +371,7 @@ def _reduce_heap(
         for o, a in new.items():
             coef[o] = coef.get(o, 0) + a
         const += d
-        replaced += 1
+        replaced.append((outs, ins))
     return {s: c for s, c in coef.items() if c}, const, replaced
 
 
@@ -395,12 +442,14 @@ def prove_equivalence(
                 try:
                     ref = bdd.threshold([heap.get(s, 0) for s in order], theta - const)
                     got = _cone_bdd(bdd, netlist, root, var_of)
+                    care = _care_set(bdd, netlist, replaced, var_of)
+                    wrong = bdd.ite(care, bdd.xor(ref, got), FALSE)
                 except BudgetExceeded as exc:
                     return result(False, f"layer {li} neuron {j}: {exc}")
-                if ref != got:
+                if wrong != FALSE:
                     cex = None
                     if li == 0 and not replaced:
-                        assign = bdd.satisfy(bdd.xor(ref, got))
+                        assign = bdd.satisfy(wrong)
                         bits = [0] * network.num_inputs
                         for s, v in var_of.items():
                             if s >= 0:
