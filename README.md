@@ -140,8 +140,8 @@ approach like ours, which avoids adders. So every benchmark network is also buil
 same free tools' flows for two real chip families that use carry chains: a Xilinx-style chip
 with 6-input lookup tables, and a Lattice chip with 4-input lookup tables for the 4-input
 network. Our circuits need no carry chains at all and fit those chips one lookup table for
-one. They still use about a third fewer lookup tables, and the free tools additionally use
-2,350 carry cells:
+one. They still use more than a third fewer lookup tables, and the free tools additionally
+use 2,676 carry cells:
 
 | Network | Chip | Ours | Free tools | Difference | Free tools' carry cells |
 |---|---|---:|---:|---:|---:|
@@ -150,8 +150,8 @@ one. They still use about a third fewer lookup tables, and the free tools additi
 | 256 inputs, 90% zero weights | Xilinx-style | 2,706 | 4,244 | −36% | 554 |
 | 256 inputs, 95% zero weights | Xilinx-style | 729 | 1,175 | −38% | 248 |
 | 256 inputs, 90% zero weights, 4-input LUTs | Lattice | 4,956 | 6,934 | −29% | 1,200 |
-| 64 inputs, 70% zero weights, trained on digits | Xilinx-style | 946 | FLUT | FDIFF | FCARRY |
-| **Total** | | **10,513** | **FTOTAL** | **FTOTDIFF** | **FCTOTAL** |
+| 64 inputs, 70% zero weights, trained on digits | Xilinx-style | 946 | 2,141 | −56% | 326 |
+| **Total** | | **10,513** | **16,762** | **−37.3%** | **2,676** |
 
 The 256-input network with 70% zero weights is not in this table yet: the free tools need
 more than nine minutes for it. Handing our finished circuits to the same tools makes them

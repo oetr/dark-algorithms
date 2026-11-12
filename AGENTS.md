@@ -72,11 +72,13 @@ progress table and the ideas ahead in the same pull request.
   sees files under its working directory.
 - Yosys baseline: `python benchmarks/yosys_baseline.py [--cases NAME ...]`. Regenerate and
   commit `benchmarks/yosys_baseline.json` whenever the benchmark suite changes. Large cases
-  take many minutes (the 70%-sparse 256-input case over 9 minutes), so never run it per PR.
+  take many minutes (the 70%-sparse 256-input case over 9 minutes, the trained digits case
+  12 minutes), so never run it per PR.
 - Real-FPGA baseline: `python benchmarks/fpga_baseline.py [--cases NAME ...] [--network-only]`.
   Regenerate `benchmarks/fpga_baseline.json` when the suite changes; its `ours_through_flow`
   entries (our circuit handed to the vendor flow) are informational and go stale as the
-  compiler changes. The 256-input cases take 15-35 s each, mlp-256-s70 over 9 minutes.
+  compiler changes. The 256-input cases take 15-35 s each, mlp-256-s70 over 9 minutes and
+  digits-64-s70 14 minutes (pass `--timeout 1200`; trained structure slows Yosys down).
 - Trained cases: `benchmarks/networks/*.json`, produced by `python benchmarks/train_digits.py`
   (needs the `train` extra, scikit-learn; seeded and reproducible). The benchmark only reads
   the stored file. A new trained case needs its Yosys and vendor-flow baselines generated.

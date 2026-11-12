@@ -25,8 +25,12 @@ did not work, so later runs don't repeat them. One entry per idea: date, idea, r
   neurons. Shared-group coverage of layer 1 is 74% (902 of 1,223 literals) against 49% in
   mlp-64-s70: neurons concentrate on the same informative pixels, so sharing pays more on
   trained networks. Circuit: 946 LUTs, depth 11, proven, against 1,105 / 11 for mlp-64-s70.
-  Yosys/ABC: YLUT LUTs, depth YDEPTH (YDIFF); vendor flow (Xilinx): FLUT LUT sites and
-  FCARRY carry cells (FDIFF). Existing cases unchanged (18,034 LUTs, worst depth 15).
+  Yosys/ABC: 2,111 LUTs, depth 14 (ours -55%), in 744 s; on mlp-64-s70 it needs 2,083 / 13
+  in 223 s, so trained structure makes the free tools slower and no better. Vendor flow
+  (synth_xilinx): 2,141 LUT sites and 326 carry cells (ours -56%) in 841 s, where it needs
+  23 s for mlp-64-s70 in the same sandbox (2,134 sites, 313 carry cells); its 550 s
+  default timeout here was too short. Existing cases unchanged (18,034 LUTs, worst depth
+  15); totals over all cases 18,980 LUTs, -44.5% vs Yosys/ABC, -37.3% vs the vendor flows.
 - Tried first: 80% zeros; 13 of 64 first-layer neurons came out dead, so 70% (matching an
   existing random case) was kept. lr 0.005-0.1 and 60-150 epochs gave 32-86% test accuracy.
 - Next: larger trained cases in published FPGA network shapes (e.g. LogicNets' jet-tagging
