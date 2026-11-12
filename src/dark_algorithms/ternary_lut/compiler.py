@@ -19,15 +19,19 @@ Strategy:
   integer carry floor((low part - low threshold bits) / 2^c). Each step reads as many
   whole columns as fit next to the carry, and the last step is the neuron's output, so
   no adder result or sign bit is ever materialised.
+* Counter shapes: a column's short last group (fewer than k bits removes few bits per
+  LUT) can be filled with bits of the next column, a two-column counter such as (1,5;3);
+  and when a k-bit counter removes less than one bit per two LUTs (k=4), columns can be
+  cut into full adders (3-bit groups) instead.
 * Tall columns mean fewer counters but a longer chain, so every neuron is built for each
-  target column height 2..k and the cheapest version (fewest new LUTs, then least depth)
-  is kept.
+  target column height 2..k and each applicable counter shape, and the cheapest version
+  (fewest new LUTs, then least depth) is kept.
 * Identical LUTs are shared (structural hashing), constant LUTs become constant
   signals, and LUTs no output depends on are swept away.
 
 Known headroom, roughly in order of expected payoff:
-  - generalised parallel counters that read two columns, e.g. (1,5;3) or (2,3;3), and a
-    Dadda-style schedule that compresses only as much as each column needs,
+  - a Dadda-style schedule that compresses only as much as each column needs, and GPC
+    shapes chosen per column by a small search instead of the greedy fill,
   - sharing literal groups (counters) across neurons that read the same inputs,
   - exact synthesis for small cones,
   - choosing per-neuron structures against the network's critical path instead of
@@ -159,31 +163,58 @@ class _Builder:
 
     # -- popcount threshold: compressor tree + comparator chain ------------------------------
 
-    def counter(self, elems: Sequence[Elem]) -> list[tuple[int, int]]:
-        """Generalised counter: the binary sum of `elems` (all of one column), one LUT per bit.
+    def counter(self, elems: Sequence[Elem], above: Sequence[Elem] = ()) -> list[tuple[int, int]]:
+        """Generalised parallel counter, one LUT per output bit.
 
-        Returns (signal, relative column) pairs; constant output bits come back as
-        CONST0/CONST1 signals and are dealt with by the caller.
+        Sums `elems` (all of one column) plus `above` (bits of the next column, weight 2) and
+        returns the binary result as (signal, relative column) pairs; constant output bits come
+        back as CONST0/CONST1 signals and are dealt with by the caller.
         """
-        signals = [e.signal for e in elems]
-        top = sum(e.hi_value for e in elems)
+        weighted = [(e, 0) for e in elems] + [(e, 1) for e in above]
+        signals = [e.signal for e, _ in weighted]
+        top = sum(e.hi_value << sh for e, sh in weighted)
         if top == 0:
             return []
 
-        values = elem_values([(e, 0) for e in elems])
+        values = elem_values(weighted)
         return [
             (self.lut_from_truth(signals, (values >> j) & 1 == 1), j)
             for j in range(top.bit_length())
         ]
 
-    def compress(self, heap: BitHeap, max_height: int) -> None:
+    def borrow_count(self, group: Sequence[Elem], above: Sequence[Elem]) -> int:
+        """How many next-column bits to add to a short counter group (a two-column GPC).
+
+        A short group is wasteful: 3, 4 or 5 bits need 2, 3 or 3 LUTs to remove 1, 1 or 2 bits.
+        Filling the free LUT inputs with bits of the next column, e.g. a (1,5;3) counter
+        (max 7, three LUTs, removes three bits) or a (1,4;3) counter, removes more bits for the
+        same LUTs. Picks the shape with the most bits removed per LUT, then the most removed.
+        """
+        k = self.netlist.k
+        best_key, best = (0.0, 0), 0
+        base = sum(e.hi_value for e in group)
+        for a in range(min(len(above), k - len(group)) + 1):
+            outs = (base + 2 * sum(e.hi_value for e in above[:a])).bit_length()
+            removed = len(group) + a - outs
+            if outs == 0 or removed <= 0:
+                continue
+            key = (removed / outs, removed)
+            if key > best_key:
+                best_key, best = key, a
+        return best
+
+    def compress(
+        self, heap: BitHeap, max_height: int, gpc: bool = False, group_size: int = 0
+    ) -> None:
         """Wallace-style reduction with k-input counters until no column exceeds max_height.
 
         Every stage adds one LUT level. Within a stage each column is cut into groups of up
         to k bits; a group of g bits becomes ceil(log2(g + 1)) bits spread over the next
-        columns, so a k=6 group (a 6:3 counter) removes three bits for three LUTs.
+        columns, so a k=6 group (a 6:3 counter) removes three bits for three LUTs. With
+        `gpc`, a column's short last group also takes bits of the next column (see
+        borrow_count).
         """
-        k = self.netlist.k
+        k = group_size or self.netlist.k
         # Groups of 1-2 bits remove nothing; only a target height of 1 needs half adders.
         min_group = 3 if max_height >= 2 else 2
         while heap.max_height() > max_height:
@@ -198,7 +229,12 @@ class _Builder:
                     if len(group) < min_group:
                         nxt.extend(col, group)
                         continue
-                    for sig, j in self.counter(group):
+                    above: list[Elem] = []
+                    if gpc and len(group) < self.netlist.k:
+                        pool = heap.cols.get(col + 1, [])
+                        a = self.borrow_count(group, pool)
+                        above, heap.cols[col + 1] = pool[:a], pool[a:]
+                    for sig, j in self.counter(group, above):
                         nxt.add_signal(col + j, sig)
             heap.cols, heap.offset = nxt.cols, nxt.offset
 
@@ -289,15 +325,22 @@ class _Builder:
         elems = [Elem(s, 1, 0) if w < 0 else Elem(s, 0, 1 if w > 0 else 0) for s, w in terms]
         literal_threshold = threshold + sum(1 for _, w in terms if w < 0)
 
-        def build(max_height: int) -> int:
+        def build(max_height: int, gpc: bool, group_size: int) -> int:
             heap = BitHeap(cols={0: list(elems)})
-            self.compress(heap, max_height=max_height)
+            self.compress(heap, max_height=max_height, gpc=gpc, group_size=group_size)
             return self.heap_at_least(heap, literal_threshold)
 
-        # Tall columns mean fewer counter LUTs but a longer comparator chain; which height
-        # is cheapest depends on the fan-in, so try them all and keep the best.
-        best = min(range(2, k + 1), key=lambda h: (*self.trial(lambda: build(h)), h))
-        return build(best)
+        # Tall columns mean fewer counter LUTs but a longer comparator chain, and the counter
+        # shape that pays off depends on the fan-in, so try the combinations and keep the best.
+        # Full adders (3-bit groups) only beat a k-bit counter when the latter removes less
+        # than one bit per two LUTs (k=4: a (4;3) removes one bit for three LUTs), and a short
+        # group can only profit from next-column bits when k >= 5 (see borrow_count).
+        outs = k.bit_length()
+        group_sizes = (0, 3) if 2 * (k - outs) < outs else (0,)
+        gpcs = (False, True) if k >= 5 else (False,)
+        options = [(h, gpc, g) for g in group_sizes for gpc in gpcs for h in range(2, k + 1)]
+        best = min(options, key=lambda o: (*self.trial(lambda: build(*o)), o))
+        return build(*best)
 
 
 def compile_network(
