@@ -110,6 +110,58 @@ def test_counter_is_exact_over_all_inputs():
     assert (value == np.where(x == 1, hi, lo).sum(axis=1)).all()
 
 
+def test_two_column_counter_is_exact_over_all_inputs():
+    # A (1,5;3) counter: five bits of this column (one inverted) plus one of the next.
+    b = _Builder(k=6, num_inputs=6)
+    sig = [b.netlist.input_signal(i) for i in range(6)]
+    here = [Elem(sig[0]), Elem(sig[1], 1, 0), Elem(sig[2]), Elem(sig[3]), Elem(sig[4])]
+    outs = b.counter(here, above=[Elem(sig[5])])
+    assert [j for _, j in outs] == [0, 1, 2]  # max 5 + 2 = 7 fits in three bits
+    b.netlist.outputs = [s for s, _ in outs]
+    x = all_vectors(6).astype(np.int64)
+    value = (simulate(b.netlist, x).astype(np.int64) << np.arange(3)).sum(axis=1)
+    expected = x[:, 0] + (1 - x[:, 1]) + x[:, 2] + x[:, 3] + x[:, 4] + 2 * x[:, 5]
+    assert (value == expected).all()
+
+
+def test_short_groups_borrow_next_column_bits_only_when_it_pays():
+    b6, b4 = _Builder(k=6, num_inputs=12), _Builder(k=4, num_inputs=12)
+    bits = [Elem(b6.netlist.input_signal(i)) for i in range(12)]
+    assert b6.borrow_count(bits[:5], bits[5:]) == 1  # (1,5;3): removes 3 bits for 3 LUTs
+    assert b6.borrow_count(bits[:4], bits[4:]) == 1  # (1,4;3): removes 2 bits for 3 LUTs
+    assert b6.borrow_count(bits[:3], bits[3:]) == 2  # (2,3;3): removes 2 bits for 3 LUTs
+    assert b6.borrow_count(bits[:5], []) == 0
+    assert b4.borrow_count(bits[:3], bits[3:]) == 0  # a full adder is already better
+
+
+@pytest.mark.parametrize("k", [4, 5, 6])
+@pytest.mark.parametrize(("gpc", "group_size"), [(False, 0), (True, 0), (False, 3), (True, 3)])
+def test_compression_variants_are_exact(k, gpc, group_size):
+    # 7 bits of weight 1, 6 of weight 2 (one inverted), 3 of weight 4: value range 0..31.
+    n_inputs = 16
+    weights = np.array([1] * 7 + [2] * 6 + [4] * 3)
+    x = all_vectors(n_inputs).astype(np.int64)
+    value = x @ weights + (1 - 2 * x[:, 7]) * 2
+    for threshold in range(-1, 34, 3):
+        b = _Builder(k=k, num_inputs=n_inputs)
+        heap = BitHeap()
+        for i, w in enumerate(weights):
+            s = b.netlist.input_signal(i)
+            heap.extend(int(w).bit_length() - 1, [Elem(s, 1, 0) if i == 7 else Elem(s)])
+        b.compress(heap, max_height=2, gpc=gpc, group_size=group_size)
+        b.netlist.outputs = [b.heap_at_least(heap, threshold)]
+        out = simulate(b.netlist.sweep(), x).ravel()
+        assert (out == (value >= threshold)).all(), (k, gpc, group_size, threshold)
+
+
+def test_full_adders_shrink_wide_neurons_at_k4():
+    # 36-input majority at k=4: (4;3) counters needed 77 LUTs at depth 9.
+    net = TernaryNetwork((TernaryLayer(np.ones((1, 36), dtype=np.int8), np.array([18])),))
+    nl = compile_network(net, k=4)
+    assert check_equivalence(net, nl, num_samples=8192).equivalent
+    assert nl.lut_count() <= 62 and nl.depth() <= 8
+
+
 @pytest.mark.parametrize("k", [3, 4, 6])
 def test_heap_comparator_is_exact_for_every_threshold(k):
     # 5 bits of weight 1, 4 of weight 2 and 3 of weight 4: value range 0..25.
@@ -130,7 +182,7 @@ def test_heap_comparator_is_exact_for_every_threshold(k):
         assert (out == (value >= threshold)).all(), (k, threshold)
 
 
-@pytest.mark.parametrize("k", [3, 4, 6])
+@pytest.mark.parametrize("k", [3, 4, 5, 6])
 def test_wide_neuron_matches_reference_for_every_threshold(k):
     rng = np.random.default_rng(5)
     w = rng.choice(np.array([-1, 1]), size=16)
@@ -176,7 +228,7 @@ def test_all_zero_neuron_becomes_constant():
     assert nl.outputs == [CONST1, CONST0]
 
 
-@pytest.mark.parametrize("k", [3, 4, 6])
+@pytest.mark.parametrize("k", [3, 4, 5, 6])
 @pytest.mark.parametrize("sparsity", [0.0, 0.5, 0.9])
 @pytest.mark.parametrize("seed", range(3))
 def test_compiled_circuit_matches_reference_exhaustively(k, sparsity, seed):
