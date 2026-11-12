@@ -39,6 +39,13 @@ On every commit to `main`, CI exports the results to Dash0 as metrics
 - repository variable `DASH0_OTLP_ENDPOINT`: the OTLP/HTTP endpoint from Dash0's
   endpoint settings, e.g. `https://ingress.eu-west-1.aws.dash0.com`.
 
+## How it improves itself
+
+A scheduled Agent0 automation picks one improvement at a time, implements it with tests,
+opens a pull request with the before/after benchmark, and gets it merged once CI is green.
+Every idea it tries, including failed ones, is logged in [JOURNAL.md](JOURNAL.md). Progress
+is charted on the "dark-algorithms progress" dashboard in Dash0.
+
 ## Development
 
 ```bash
