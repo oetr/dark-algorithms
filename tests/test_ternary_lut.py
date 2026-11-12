@@ -160,3 +160,41 @@ def test_sparsity_reduces_luts():
     assert r.equivalent
     assert r.lut_count < r.baseline_lut_count
     assert r.lut_reduction > 0.3
+
+
+# -- bit-heap neurons --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("k", [3, 4, 6])
+@pytest.mark.parametrize("fan_in", [7, 9, 12, 16])
+def test_wide_neuron_matches_reference_for_every_threshold(k, fan_in):
+    rng = np.random.default_rng(fan_in * 10 + k)
+    weights = rng.choice(np.array([-1, 1], dtype=np.int8), size=(1, fan_in))
+    lo, hi = int(np.minimum(weights, 0).sum()), int(np.maximum(weights, 0).sum())
+    x = all_vectors(fan_in)
+    for t in range(lo - 1, hi + 2):
+        net = TernaryNetwork((TernaryLayer(weights, np.array([t])),))
+        nl = compile_network(net, k=k)
+        assert (simulate(nl, x) == net.forward(x)).all(), (k, fan_in, t)
+
+
+def test_constant_and_duplicate_inputs_are_folded():
+    # Layer 1: neuron 0 is constant 1, neurons 1 and 2 are identical (shared by hashing).
+    w1 = np.array([[0, 0, 0, 0], [1, 1, 0, 0], [1, 1, 0, 0], [0, 0, 1, -1]], dtype=np.int8)
+    layer1 = TernaryLayer(w1, np.array([0, 2, 2, 0]))
+    # Layer 2: +1 and -1 on the two identical neurons cancel; the constant shifts the threshold.
+    w2 = np.array([[1, 1, -1, 1]], dtype=np.int8)
+    net = TernaryNetwork((layer1, TernaryLayer(w2, np.array([2]))))
+    nl = compile_network(net)
+    assert check_equivalence(net, nl).equivalent
+    # Output is just "neuron 3 fires", i.e. x2 >= x3: one LUT reading two inputs.
+    assert nl.lut_count() == 1 and len(nl.luts[0].inputs) == 2
+
+
+def test_wide_popcount_is_small_and_shallow():
+    # A 36-input majority at k=6: six (6;3) counters, a second stage, then a short carry chain.
+    net = TernaryNetwork((TernaryLayer(np.ones((1, 36), dtype=np.int8), np.array([18])),))
+    nl = compile_network(net, k=6)
+    assert check_equivalence(net, nl, num_samples=8192).equivalent
+    assert nl.lut_count() <= 32
+    assert nl.depth() <= 5
