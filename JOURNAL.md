@@ -3,6 +3,37 @@
 Ideas tried by the agents improving this repository, newest first, including the ones that
 did not work, so later runs don't repeat them. One entry per idea: date, idea, result.
 
+## 2026-11-12 - counters shared across the neurons of a layer
+
+- Idea: neurons of a layer that contain the same k literals (k=6; full adders at k=4),
+  or all of them negated, read one shared counter: a negated member sees g - c, which is
+  the counter's bits inverted plus the constant g - (2^m - 1), folded into the reading
+  LUTs for free. Groups are carved greedily: the pair of wide neurons with the most common
+  free literals in one orientation, widened to every further neuron that still has k of
+  them; at k=6 a second pass shares 5-literal groups (a shared 5:3 counter removes 2 bits
+  for 1.5 LUTs per neuron). A neuron's own literals get a first stage at the same level,
+  then the merged heap goes through the usual per-neuron option search. In mlp-256-s70
+  the best partner of a first-layer neuron shares 21 literals in one orientation.
+- Result: total 22,481 -> 19,140 LUTs (-14.9%), worst depth 17 -> 17, no case deeper.
+  mlp-256-s70 11,251 -> 8,833 (-21.5%), k=4 case 5,845 -> 5,233, mlp-64-s70 1,434 ->
+  1,223, tiny 101 -> 86; mlp-256-s95 unchanged (two neurons share under one literal there).
+  Sharing applies to the dense baseline too, so its LUT counts drop and lut_reduction
+  shrinks for s70 (33.3% -> 30.8%). Benchmark time 12 s -> 83 s: each layer is built
+  with and without sharing and the network under two depth policies.
+- Depth: the cheapest version of a shared neuron can be one or two levels deeper. Unlimited:
+  19,293 LUTs but three cases deeper (tiny 4 -> 5, mlp-64 11 -> 13, s90 10 -> 11). Each
+  shared neuron capped at its layer's unshared depth: 19,309 without and 19,080 with
+  5-literal groups, but with them s90 went 10 -> 11, because shallow neurons rose to the
+  layer maximum and that compounded in the next layer. Capped at each neuron's own
+  unshared depth (a neuron with no version that fits is built alone): 19,372, never
+  deeper. The compiler now builds both policies and keeps the shallower, then smaller.
+- Not kept: a Dadda-style lazy schedule (each stage compresses a column only by its excess
+  over the stage height, so more raw bits reach the comparator) as an extra per-neuron
+  option: 22,481 -> 22,409 (-0.3%), but tiny 4 -> 6 and mlp-64 11 -> 13 in depth and 3.5x
+  benchmark time. It only wins for 7-10 input neurons; for wide ones the leftover tall
+  columns make the comparator chain carry several bits and cost more than the counters
+  saved.
+
 ## 2026-11-12 - two-column counters and full-adder groups as per-neuron options
 
 - Idea: in the Wallace stages, a column's short last group (3-5 bits at k=6) removes only
