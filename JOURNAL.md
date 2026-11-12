@@ -3,6 +3,29 @@
 Ideas tried by the agents improving this repository, newest first, including the ones that
 did not work, so later runs don't repeat them. One entry per idea: date, idea, result.
 
+## 2026-11-12 - real-FPGA reference: Yosys vendor flows with carry chains
+
+- Idea: the LUT-only Yosys/ABC reference (`synth -lut K`) cannot use carry chains, which make
+  adders and comparators cheap on real FPGAs, so "-41.5% vs Yosys/ABC" might only hold on a
+  target that does not exist. Synthesize the same behavioral Verilog with `synth_xilinx`
+  (7-series LUT6 + CARRY4) for k=6 cases and `synth_ecp5` (LUT4 + CCU2C) for the k=4 case,
+  count LUT sites (Xilinx: LUT1-6 and INV; ECP5: LUT4 plus two per CCU2C, which holds two
+  LUT4s), carry cells and slice muxes, and compare with our LUT count: our k-LUTs map one to
+  one onto the target's LUT primitives with no carry cells.
+- Result (measurement only, circuits unchanged at 18,777 LUTs / depth 17): on the five cases
+  the vendor flows finished we use 10,025 LUT sites against 14,621 (-31.4%), and the vendor
+  flows also use 2,350 carry cells. Per case: tiny -43.3%, mlp-64-s70 -45.3%, mlp-256-s90
+  -33.6%, mlp-256-s95 -36.8%, k=4 on ECP5 -24.7% (the smallest margin, as against
+  Yosys/ABC). So the advantage holds on carry-chain targets. The vendor flows are faster than
+  the LUT-only one (12-33 s per 256-input case), but mlp-256-s70 did not finish in 560 s.
+- Seen: our circuit, written as plain LUT logic and handed to the same flow, comes back
+  larger: 76 -> 87, 1,168 -> 1,490, 2,819 -> 3,395, 743 -> 815 on Xilinx and 5,219 -> 6,860
+  LUT4 on ECP5. ABC re-maps through its own structure and loses the counter trees, so the
+  circuits should be placed as built (LUT primitives with INIT), never re-synthesized.
+- Open: depth on these targets (a CARRY4 hop is far faster than a LUT level, so LUT levels
+  alone are not comparable), and whether our own comparators or last tree stages could use
+  carry chains to save LUTs.
+
 ## 2026-11-12 - formal equivalence proof for every benchmark circuit
 
 - Idea: wide cases were only checked on 4,096 random vectors. Prove each circuit equal to

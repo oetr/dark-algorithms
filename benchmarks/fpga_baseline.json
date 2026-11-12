@@ -1,0 +1,176 @@
+{
+  "mlp-256-s90": {
+    "flow": "synth_xilinx -flatten -noiopad",
+    "network": {
+      "carry_cells": 554,
+      "cells": {
+        "CARRY4": 554,
+        "INV": 88,
+        "LUT2": 848,
+        "LUT3": 755,
+        "LUT4": 716,
+        "LUT5": 1050,
+        "LUT6": 787,
+        "MUXF7": 3,
+        "MUXF8": 1
+      },
+      "lut_sites": 4244,
+      "mux_cells": 4,
+      "seconds": 32.7
+    },
+    "ours_through_flow": {
+      "carry_cells": 0,
+      "cells": {
+        "LUT2": 340,
+        "LUT3": 211,
+        "LUT4": 224,
+        "LUT5": 825,
+        "LUT6": 1795,
+        "MUXF7": 29,
+        "MUXF8": 3
+      },
+      "lut_sites": 3395,
+      "mux_cells": 32,
+      "our_lut_count": 2819,
+      "seconds": 96.0
+    },
+    "target": "xilinx-7series",
+    "tool": "Yosys 0.70"
+  },
+  "mlp-256-s90-k4": {
+    "flow": "synth_ecp5 -flatten -noiopad",
+    "network": {
+      "carry_cells": 1200,
+      "cells": {
+        "CCU2C": 1200,
+        "L6MUX21": 57,
+        "LUT4": 4534,
+        "PFUMX": 826
+      },
+      "lut_sites": 6934,
+      "mux_cells": 883,
+      "seconds": 14.2
+    },
+    "ours_through_flow": {
+      "carry_cells": 0,
+      "cells": {
+        "L6MUX21": 550,
+        "LUT4": 6860,
+        "PFUMX": 1760
+      },
+      "lut_sites": 6860,
+      "mux_cells": 2310,
+      "our_lut_count": 5219,
+      "seconds": 54.1
+    },
+    "target": "lattice-ecp5",
+    "tool": "Yosys 0.70"
+  },
+  "mlp-256-s95": {
+    "flow": "synth_xilinx -flatten -noiopad",
+    "network": {
+      "carry_cells": 248,
+      "cells": {
+        "CARRY4": 248,
+        "INV": 25,
+        "LUT2": 333,
+        "LUT3": 240,
+        "LUT4": 193,
+        "LUT5": 239,
+        "LUT6": 145
+      },
+      "lut_sites": 1175,
+      "mux_cells": 0,
+      "seconds": 12.3
+    },
+    "ours_through_flow": {
+      "carry_cells": 0,
+      "cells": {
+        "LUT2": 27,
+        "LUT3": 56,
+        "LUT4": 36,
+        "LUT5": 152,
+        "LUT6": 544,
+        "MUXF7": 11,
+        "MUXF8": 4
+      },
+      "lut_sites": 815,
+      "mux_cells": 15,
+      "our_lut_count": 743,
+      "seconds": 21.3
+    },
+    "target": "xilinx-7series",
+    "tool": "Yosys 0.70"
+  },
+  "mlp-64-s70": {
+    "flow": "synth_xilinx -flatten -noiopad",
+    "network": {
+      "carry_cells": 313,
+      "cells": {
+        "CARRY4": 313,
+        "INV": 39,
+        "LUT2": 424,
+        "LUT3": 394,
+        "LUT4": 566,
+        "LUT5": 424,
+        "LUT6": 287,
+        "MUXF7": 3,
+        "MUXF8": 1
+      },
+      "lut_sites": 2134,
+      "mux_cells": 4,
+      "seconds": 23.5
+    },
+    "ours_through_flow": {
+      "carry_cells": 0,
+      "cells": {
+        "LUT2": 177,
+        "LUT3": 69,
+        "LUT4": 135,
+        "LUT5": 414,
+        "LUT6": 695,
+        "MUXF7": 22,
+        "MUXF8": 4
+      },
+      "lut_sites": 1490,
+      "mux_cells": 26,
+      "our_lut_count": 1168,
+      "seconds": 164.8
+    },
+    "target": "xilinx-7series",
+    "tool": "Yosys 0.70"
+  },
+  "tiny-exhaustive-s50": {
+    "flow": "synth_xilinx -flatten -noiopad",
+    "network": {
+      "carry_cells": 35,
+      "cells": {
+        "CARRY4": 35,
+        "LUT2": 51,
+        "LUT3": 34,
+        "LUT4": 19,
+        "LUT5": 18,
+        "LUT6": 12
+      },
+      "lut_sites": 134,
+      "mux_cells": 0,
+      "seconds": 5.8
+    },
+    "ours_through_flow": {
+      "carry_cells": 0,
+      "cells": {
+        "LUT2": 8,
+        "LUT3": 6,
+        "LUT4": 10,
+        "LUT5": 27,
+        "LUT6": 36
+      },
+      "lut_sites": 87,
+      "mux_cells": 0,
+      "our_lut_count": 76,
+      "seconds": 5.9
+    },
+    "target": "xilinx-7series",
+    "tool": "Yosys 0.70"
+  }
+}

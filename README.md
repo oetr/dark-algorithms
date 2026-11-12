@@ -96,15 +96,38 @@ every network:
 | 256 inputs, 70% zero weights | 8,752 | 18,476 | −53% | 17 / 18 |
 | **Total** | **18,777** | **32,110** | **−41.5%** | |
 
-Real chips also have fast adder circuitry (carry chains) that this comparison does not use
-yet; adding a comparison on such a target is the next step.
+**Compared with free chip-design software on real chips.** Real FPGAs also have dedicated
+adder circuitry (carry chains) next to their lookup tables, which makes adding and comparing
+numbers much cheaper. A comparison that allows lookup tables only could therefore flatter an
+approach like ours, which avoids adders. So every benchmark network is also built with the
+same free tools' flows for two real chip families that use carry chains: a Xilinx-style chip
+with 6-input lookup tables, and a Lattice chip with 4-input lookup tables for the 4-input
+network. Our circuits need no carry chains at all and fit those chips one lookup table for
+one. They still use about a third fewer lookup tables, and the free tools additionally use
+2,350 carry cells:
+
+| Network | Chip | Ours | Free tools | Difference | Free tools' carry cells |
+|---|---|---:|---:|---:|---:|
+| 16 inputs, 50% zero weights | Xilinx-style | 76 | 134 | −43% | 35 |
+| 64 inputs, 70% zero weights | Xilinx-style | 1,168 | 2,134 | −45% | 313 |
+| 256 inputs, 90% zero weights | Xilinx-style | 2,819 | 4,244 | −34% | 554 |
+| 256 inputs, 95% zero weights | Xilinx-style | 743 | 1,175 | −37% | 248 |
+| 256 inputs, 90% zero weights, 4-input LUTs | Lattice | 5,219 | 6,934 | −25% | 1,200 |
+| **Total** | | **10,025** | **14,621** | **−31.4%** | **2,350** |
+
+The 256-input network with 70% zero weights is not in this table yet: the free tools need
+more than nine minutes for it. Handing our finished circuits to the same tools makes them
+10% to 31% larger, not smaller, so the tools' own optimisation finds nothing to improve and
+our circuits are best placed on the chip exactly as built. The longest chain is not compared
+here, because a carry chain is much faster than a chain of lookup tables of the same length.
 
 **Ideas ahead.** Choosing the shared input groups better (covering every neuron's inputs as
 completely as possible, and sharing the later counting steps too), counting only as much as
 each binary position needs in every step of the tree and picking the best counter for each
 position by search, exactly optimal circuits for small neurons, trading a little depth for
-fewer LUTs where it pays, and benchmarks with networks trained on real tasks, where shared
-structure may differ from random networks.
+fewer LUTs where it pays, benchmarks with networks trained on real tasks, where shared
+structure may differ from random networks, a speed comparison on real chips that accounts for
+fast carry chains, and using the chips' carry chains ourselves where they save lookup tables.
 
 ## How it improves itself
 

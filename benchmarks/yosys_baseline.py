@@ -107,9 +107,14 @@ def synthesize(network: TernaryNetwork, k: int, timeout: float) -> dict:
 
 def synthesize_netlist(network: TernaryNetwork, k: int, timeout: float = 600) -> dict:
     """Synthesize like `synthesize` and return Yosys's JSON netlist of the mapped design."""
+    return synthesize_verilog_netlist(to_verilog(network), k, timeout)
+
+
+def synthesize_verilog_netlist(verilog: str, k: int, timeout: float = 600) -> dict:
+    """Map a `top` module to k-input LUTs and return Yosys's JSON netlist of it."""
     yosys = yosys_binary()
     with tempfile.TemporaryDirectory() as tmp:
-        (Path(tmp) / "net.v").write_text(to_verilog(network))
+        (Path(tmp) / "net.v").write_text(verilog)
         script = (
             "read_verilog net.v; synth -flatten -top top -lut %d; opt_clean; write_json out.json"
         )

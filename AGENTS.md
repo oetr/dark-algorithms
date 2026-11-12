@@ -14,12 +14,21 @@ versions: the open-source Yosys/ABC flow synthesizing the same networks to the s
 LUT-only target. The headline number is total LUTs relative to Yosys/ABC (below 100% means
 we beat it). The stored Yosys results are in `benchmarks/yosys_baseline.json`.
 
+A second, real-FPGA reference uses Yosys's vendor flows with carry chains (`synth_xilinx` for
+k=6, `synth_ecp5` for k=4), stored in `benchmarks/fpga_baseline.json` and reported as LUT
+sites and carry cells per case. Our k-LUTs map one to one onto those chips' LUT primitives
+with no carry cells, so our LUT sites there are our LUT count.
+
 ### Current priorities
 
-1. **Add a real-FPGA reference.** LUT-only counts ignore carry chains. Add a second baseline
-   with a vendor-style target (for example Yosys `synth_xilinx` or `synth_ecp5`, counting LUTs
-   and carry cells) and compare our circuits handed to the same flow.
-2. Then keep shrinking LUTs and depth, reporting the gap to Yosys/ABC in every pull request.
+1. Keep shrinking LUTs and depth, reporting the gap to Yosys/ABC and to the vendor flows in
+   every pull request.
+2. The vendor-flow result for mlp-256-s70 is missing: `synth_xilinx` takes over nine minutes
+   on it, longer than an agent's sandbox allows for one command. Generate it where it can
+   run (`python benchmarks/fpga_baseline.py --cases mlp-256-s70 --network-only`).
+3. Depth is not yet compared on the vendor targets (a carry chain is much faster than a LUT
+   level); a timing-aware comparison, and using carry chains in our own circuits where they
+   save LUTs, are open.
 
 Every benchmark circuit is formally proven equivalent to its network (`prove.py`, reported
 as `proven` per case); the regression gate fails when a case the base proved is no longer
@@ -60,6 +69,10 @@ progress table and the ideas ahead in the same pull request.
 - Yosys baseline: `python benchmarks/yosys_baseline.py [--cases NAME ...]`. Regenerate and
   commit `benchmarks/yosys_baseline.json` whenever the benchmark suite changes. Large cases
   take many minutes (the 70%-sparse 256-input case over 9 minutes), so never run it per PR.
+- Real-FPGA baseline: `python benchmarks/fpga_baseline.py [--cases NAME ...] [--network-only]`.
+  Regenerate `benchmarks/fpga_baseline.json` when the suite changes; its `ours_through_flow`
+  entries (our circuit handed to the vendor flow) are informational and go stale as the
+  compiler changes. The 256-input cases take 15-35 s each, mlp-256-s70 over 9 minutes.
 - Check: `ruff check . && ruff format --check . && pytest -q`.
 - Benchmark: `python benchmarks/run.py --output results.json`; compare two runs with
   `python benchmarks/compare.py base.json head.json`.
