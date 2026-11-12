@@ -537,9 +537,18 @@ def find_shared_groups(weights: np.ndarray, size: int, min_fanin: int) -> list[S
     """Greedily carve literal groups of `size` that two or more neurons of a layer contain.
 
     Only neurons with more than `min_fanin` non-zero weights (the ones built as counter
-    trees) take part. Each round takes the pair of neurons with the most common free
-    literals in one orientation, narrows the common set while further neurons can join it
-    with `size` literals left, and turns `size` of those literals into a group. A literal
+    trees) take part. Two neurons are partners while they still have `size` common free
+    literals in one orientation. Carving is a matching problem: every group uses up
+    literals that other pairs could have shared, so each round serves the most constrained
+    neuron first (the one with the fewest partners left, then the most free literals) and
+    pairs it with its most constrained partner (then the one it has most in common with).
+    Taking the pair with the most common literals instead, as an earlier version did, used
+    up the literals of well-connected neurons early and left about a quarter of the
+    literals of a 70%-sparse layer unshared.
+
+    The pair's common set is narrowed while further neurons can join it with `size`
+    literals left. Of the common literals, the group takes the `size` that the fewest other
+    neurons still have, keeping widely held literals free for later pairings. A literal
     belongs to at most one group per neuron.
     """
     w = np.asarray(weights, dtype=np.int64)
@@ -554,14 +563,17 @@ def find_shared_groups(weights: np.ndarray, size: int, min_fanin: int) -> list[S
         agree, disagree = (both + dot) / 2, (both - dot) / 2
         np.fill_diagonal(agree, 0)
         np.fill_diagonal(disagree, 0)
-        pick_agree = agree.max() >= disagree.max()
-        common = agree if pick_agree else disagree
-        a, b = np.unravel_index(int(np.argmax(common)), common.shape)
-        if common[a, b] < size:
+        common = np.maximum(agree, disagree)
+        partners = (common >= size).sum(axis=1)
+        if not partners.any():
             return groups
+        free_lits = mag.sum(axis=1)
+        a = min(np.flatnonzero(partners), key=lambda i: (partners[i], -free_lits[i], i))
+        b = min(np.flatnonzero(common[a] >= size), key=lambda j: (partners[j], -common[a, j], j))
+        a, b = int(a), int(b)
         ref = free[a].copy()
-        members = {int(a): 1, int(b): 1 if pick_agree else -1}
-        cols = np.flatnonzero((ref != 0) & (free[b] == members[int(b)] * ref))
+        members = {a: 1, b: 1 if agree[a, b] >= disagree[a, b] else -1}
+        cols = np.flatnonzero((ref != 0) & (free[b] == members[b] * ref))
         while True:
             sub = free[:, cols]
             same = (sub == ref[cols]).sum(axis=1)
@@ -574,7 +586,10 @@ def find_shared_groups(weights: np.ndarray, size: int, min_fanin: int) -> list[S
             orient = 1 if same[c] >= flip[c] else -1
             members[c] = orient
             cols = cols[free[c, cols] == orient * ref[cols]]
-        cols = cols[:size]
+        others = np.ones(len(free), dtype=bool)
+        others[list(members)] = False
+        held = mag[others][:, cols].sum(axis=0)
+        cols = cols[np.argsort(held, kind="stable")][:size]
         for m, orient in members.items():
             assert (free[m, cols] == orient * ref[cols]).all()
             free[m, cols] = 0
