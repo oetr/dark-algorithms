@@ -23,6 +23,14 @@ Strategy:
   carry bit, and the carry is clamped to the values that can still change the outcome
   (anything at or above the remaining threshold, or too low to reach it with what is
   left, is folded together), which can save carry bits.
+* The chain is planned as a whole rather than step by step: a small memoised search over
+  the steps (how many whole columns, how many bits of the next column) also allows steps
+  that take only part of the lowest column without shifting the carry, which pays off
+  near the end of the chain where the clamped carry stays small. For a neuron only a few
+  literals wider than a LUT this replaces the counters altogether (8 literals at k=6:
+  six literals clamp to the four carry values {<=1, 2, 3, >=4}, two LUTs, then one LUT
+  for the rest; the tree needed four). Each compressor tree is tried with the shallowest
+  plan, the cheapest plan and the old greedy chain, so no version is worse than before.
 * Counter shapes: a column's short last group (fewer than k bits removes few bits per
   LUT) can be filled with bits of the next column, a two-column counter such as (1,5;3);
   and when a k-bit counter removes less than one bit per two LUTs (k=4), columns can be
@@ -36,7 +44,7 @@ Strategy:
   stages is the same as Wallace's.
 * Tall columns mean fewer counters but a longer chain, so every neuron is built for each
   target column height 2..k and each applicable counter shape, with and without the lazy
-  last stage.
+  last stage, and, when it has at most 3k literals, with no counters at all.
 * Counters shared across neurons: neurons of one layer that contain the same k literals
   (or all of them inverted: the count is then g - c, i.e. the counter's bits inverted
   plus a constant, which folds into the reading LUTs) read one shared k-input counter
@@ -68,11 +76,14 @@ Known headroom, roughly in order of expected payoff:
     network) are open,
   - GPC shapes chosen per column by a small search instead of the greedy fill (a lazy
     schedule for every stage, not just the last, was tried and only saved 0.3%, see
-    JOURNAL.md),
+    JOURNAL.md), and a last counter stage that knows which bits the planned chain will
+    take (a per-column target that lets column 0 stay k bits tall saved only 0.4% per
+    neuron),
   - exact synthesis for small cones,
   - required levels from a true backward timing pass over the final netlist instead of
-    the first pass's paths, a shared-neuron trial cache (the benchmark now takes ~4.5
-    minutes), and trading depth for LUTs beyond the shallowest network.
+    the first pass's paths, a shared-neuron trial cache (the benchmark now takes ~7
+    minutes), and trading depth for LUTs beyond the shallowest network (mlp-256-s70 is
+    now one level shallower than before at 9 more LUTs).
 
 Setting `prune_zeros=False` compiles every weight, zero or not, as if the
 hardware could not exploit sparsity. It is the baseline the eval compares against.
