@@ -13,6 +13,10 @@ LUTs are stored in topological order, so a LUT only reads signals created before
 
 A truth table is an int bitmask: bit `idx` holds the output for the input
 combination `idx = sum(value(inputs[j]) << j)`.
+
+`layer_outputs` optionally records, for every layer of the source network, the signal that
+carries each neuron's output (None when no output depends on it and it was swept away).
+It adds no logic; the formal equivalence proof uses it to check one layer at a time.
 """
 
 from __future__ import annotations
@@ -40,6 +44,7 @@ class Netlist:
     num_inputs: int
     luts: list[Lut] = field(default_factory=list)
     outputs: list[int] = field(default_factory=list)
+    layer_outputs: list[list[int | None]] = field(default_factory=list)
 
     @property
     def first_lut_signal(self) -> int:
@@ -73,6 +78,10 @@ class Netlist:
         for s in self.outputs:
             if not 0 <= s < self.num_signals:
                 raise ValueError(f"output refers to undefined signal {s}")
+        for layer in self.layer_outputs:
+            for s in layer:
+                if s is not None and not 0 <= s < self.num_signals:
+                    raise ValueError(f"layer output refers to undefined signal {s}")
 
     def depth(self) -> int:
         """Logic depth: the longest chain of LUTs from an input to an output.
@@ -112,4 +121,5 @@ class Netlist:
             num_inputs=self.num_inputs,
             luts=kept,
             outputs=[remap[s] for s in self.outputs],
+            layer_outputs=[[remap.get(s) for s in layer] for layer in self.layer_outputs],
         )

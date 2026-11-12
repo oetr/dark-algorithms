@@ -3,6 +3,33 @@
 Ideas tried by the agents improving this repository, newest first, including the ones that
 did not work, so later runs don't repeat them. One entry per idea: date, idea, result.
 
+## 2026-11-12 - formal equivalence proof for every benchmark circuit
+
+- Idea: wide cases were only checked on 4,096 random vectors. Prove each circuit equal to
+  its network for all inputs, layer by layer: with the previous layer's output signals as
+  free variables (the compiler now records them per layer), every neuron's cone must equal
+  its threshold function. Merged or constant hidden neurons use the same variable or
+  constant in the reference; a swept hidden neuron gets its own free variable.
+- Failed first: a plain BDD of each neuron's cone over its inputs. Fine for the 90-95%
+  sparse cases (all proven in under 2 s), but in mlp-256-s70 the middle compressor stages
+  compute bits of several partial sums whose groups differ per column, so one 77-input
+  neuron needed 0.9-1.9 million nodes depending on the variable order (depth-first,
+  reversed, creation order; reverse creation order over 3 million) and the sandbox ran out
+  of memory at 6.5 GB. ABC `cec`, as AGENTS.md suggested, is not available: the PyPI
+  Yosys build ships no standalone ABC binary.
+- Kept: arithmetic reduction before the BDD. The neuron's sum is a heap const +
+  sum(c_s * s), starting from the reference weights. A LUT group over the same inputs
+  replaces them when integers a_o, d with sum(c_i * in_i) == sum(a_o * out_o) + d hold on
+  all 2^n input rows (exact check), and only if nothing else in the cone reads those inputs.
+  The comparator left over is checked by a BDD over the remaining heap bits, least
+  significant first, against heap >= theta. This needs no knowledge of the compiler's
+  intent: every step holds for all inputs, so a proof is sound.
+- Result: all six cases proven, 0.01-1.4 s each (about 2.2 s total). LUTs and depth unchanged
+  (18,777 / 17). Tests check soundness by mutation: flipped LUT bits that exhaustive (16
+  inputs or fewer) or random simulation catches are never proven, and single-layer bugs
+  give a counterexample that really fails. The regression gate now fails if a case that
+  the base proved is no longer proven.
+
 ## 2026-11-12 - lazy last counter stage and critical-path-aware neuron versions
 
 - Idea: the last Wallace stage compresses every too-tall column as far as it can, so a

@@ -674,6 +674,15 @@ def _paths_to_outputs(netlist: Netlist) -> list[int]:
     return down
 
 
+def _split_layers(network: TernaryNetwork, signals: list[int]) -> list[list[int | None]]:
+    """Cut the flat list of neuron output signals into one list per layer."""
+    out, start = [], 0
+    for layer in network.layers:
+        out.append(list(signals[start : start + layer.out_features]))
+        start += layer.out_features
+    return out
+
+
 def compile_network(
     network: TernaryNetwork,
     k: int = DEFAULT_K,
@@ -705,8 +714,11 @@ def compile_network(
         down = _paths_to_outputs(first.netlist)
         depth = max((first.level(s) for s in first.netlist.outputs), default=0)
         required = [depth - down[s] for s in signals]
-        second, _ = _compile(network, k, prune_zeros, bool(per_neuron), share, costs, required)
-        for b in (first, second):
+        second, second_signals = _compile(
+            network, k, prune_zeros, bool(per_neuron), share, costs, required
+        )
+        for b, sigs in ((first, signals), (second, second_signals)):
+            b.netlist.layer_outputs = _split_layers(network, sigs)
             netlist = b.netlist.sweep()
             key = (netlist.depth(), netlist.lut_count())
             if best is None or key < best[0]:

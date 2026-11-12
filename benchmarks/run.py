@@ -66,23 +66,27 @@ def versus_yosys(results: list[dict]) -> tuple[int, int] | None:
 
 def summary_table(results: list[dict]) -> str:
     lines = [
-        "| case | equivalent | LUTs | depth | Yosys/ABC LUTs | Yosys depth | vs Yosys |"
+        "| case | equivalent | proven | LUTs | depth | Yosys/ABC LUTs | Yosys depth | vs Yosys |"
         " dense baseline LUTs |",
-        "|---|---|---:|---:|---:|---:|---:|---:|",
+        "|---|---|---|---:|---:|---:|---:|---:|---:|",
     ]
     for r in results:
         check = ("yes (exhaustive)" if r["exhaustive"] else "yes") if r["equivalent"] else "**NO**"
+        proven = f"yes ({r['proof_seconds']:.1f} s)" if r["proven"] else "no"
         if r["yosys_lut_count"]:
             yl, yd = r["yosys_lut_count"], r["yosys_depth"]
             vs = f"{r['lut_ratio_vs_yosys'] - 1:+.1%}"
         else:
             yl = yd = vs = "n/a"
         lines.append(
-            f"| {r['case']} | {check} | {r['lut_count']} | {r['depth']} | {yl} | {yd} | {vs} |"
+            f"| {r['case']} | {check} | {proven} | {r['lut_count']} | {r['depth']} | {yl} | {yd} |"
+            f" {vs} |"
             f" {r['baseline_lut_count']} |"
         )
     total = sum(r["lut_count"] for r in results)
     lines.append(f"\nTotal LUTs: {total}")
+    proven = sum(r["proven"] for r in results)
+    lines.append(f"Formally proven equivalent: {proven} of {len(results)} cases")
     vy = versus_yosys(results)
     if vy:
         ours, theirs = vy
@@ -123,6 +127,7 @@ def export_otlp(results: list[dict], revision: str) -> bool:
         ),
         "lut_reduction": meter.create_gauge("dark_algorithms.benchmark.lut_reduction", unit="1"),
         "equivalent": meter.create_gauge("dark_algorithms.benchmark.equivalent", unit="1"),
+        "proven": meter.create_gauge("dark_algorithms.benchmark.proven", unit="1"),
         "compile_seconds": meter.create_gauge(
             "dark_algorithms.benchmark.compile_duration", unit="s"
         ),
