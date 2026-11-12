@@ -18,7 +18,11 @@ Strategy:
   that walks the columns from the least significant one and passes on only the small
   integer carry floor((low part - low threshold bits) / 2^c). Each step reads as many
   whole columns as fit next to the carry, and the last step is the neuron's output, so
-  no adder result or sign bit is ever materialised.
+  no adder result or sign bit is ever materialised. Two refinements: a step's free LUT
+  inputs take bits of the next column straight into the carry when that costs no extra
+  carry bit, and the carry is clamped to the values that can still change the outcome
+  (anything at or above the remaining threshold, or too low to reach it with what is
+  left, is folded together), which can save carry bits.
 * Counter shapes: a column's short last group (fewer than k bits removes few bits per
   LUT) can be filled with bits of the next column, a two-column counter such as (1,5;3);
   and when a k-bit counter removes less than one bit per two LUTs (k=4), columns can be
