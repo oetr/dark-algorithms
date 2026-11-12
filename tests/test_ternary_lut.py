@@ -14,7 +14,7 @@ from dark_algorithms.ternary_lut import (
     random_network,
     simulate,
 )
-from dark_algorithms.ternary_lut.compiler import BitHeap, Elem, _Builder
+from dark_algorithms.ternary_lut.compiler import BitHeap, Elem, _Builder, find_shared_groups
 from dark_algorithms.ternary_lut.netlist import CONST0, CONST1
 
 
@@ -251,3 +251,48 @@ def test_sparsity_reduces_luts():
     assert r.equivalent
     assert r.lut_count < r.baseline_lut_count
     assert r.lut_reduction > 0.3
+
+
+# -- counters shared across neurons -------------------------------------------------------------
+
+
+def test_shared_groups_respect_orientation_and_disjointness():
+    rng = np.random.default_rng(4)
+    w = random_network([96, 40], 0.6, rng).layers[0].weights
+    groups = find_shared_groups(w, 6, 6)
+    assert groups
+    used: dict[int, set[int]] = {}
+    for g in groups:
+        assert len(g.lits) == 6 and len(g.members) >= 2
+        for m, orient in g.members:
+            for i, wi in g.lits:
+                assert w[m, i] == orient * wi != 0
+                assert i not in used.setdefault(m, set())
+                used[m].add(i)
+
+
+def test_inverted_member_reads_shared_counter_exactly():
+    # Neuron 1 has neuron 0's first eight weights negated: they share one counter
+    # in opposite orientations. Exhaustive over all 2^14 inputs and every threshold.
+    a = np.array([1, -1, 1, 1, -1, 1, 1, -1, 1, 0, 1, -1, 0, 1], dtype=np.int8)
+    b = np.concatenate([-a[:8], np.array([1, 1, -1, 0, 1, 1], dtype=np.int8)])
+    w = np.stack([a, b])
+    groups = find_shared_groups(w, 6, 6)
+    assert len(groups) == 1 and sorted(o for _, o in groups[0].members) == [-1, 1]
+    x = all_vectors(14)
+    for t0 in range(-3, 7):
+        for t1 in range(-4, 5, 2):
+            net = TernaryNetwork((TernaryLayer(w, np.array([t0, t1])),))
+            nl = compile_network(net)
+            assert (simulate(nl, x) == net.forward(x)).all(), (t0, t1)
+
+
+@pytest.mark.parametrize("k", [4, 6])
+def test_sharing_saves_luts_without_deepening(k):
+    for seed in range(3):
+        net = random_network([64, 24, 8], 0.6, np.random.default_rng(seed))
+        shared = compile_network(net, k=k)
+        alone = compile_network(net, k=k, share_counters=False)
+        assert check_equivalence(net, shared, num_samples=2048).equivalent
+        assert shared.depth() <= alone.depth(), (k, seed)
+        assert shared.lut_count() < alone.lut_count(), (k, seed)

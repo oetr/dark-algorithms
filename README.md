@@ -31,9 +31,17 @@ disappears from the circuit. The sparser the network, the smaller the circuit ca
    then asks only "are at least T of these bits 1?".
 4. The bits are counted by a tree of small counters, each squeezing up to six bits into a
    three-bit count, one LUT level per step, until only a few bits per binary position remain.
-5. A short chain of LUTs compares that count with the threshold and directly produces the
+   A counter can also take bits from two neighbouring binary positions, and with 4-input
+   LUTs the tree uses three-bit adders, which are cheaper there.
+5. Neurons of the same layer often read the same handful of inputs with the same signs (or
+   all with opposite signs, which costs nothing to undo). Such a group of inputs is counted
+   once and the count is shared by every neuron that needs it. In a network with 70% zero
+   weights almost any two neurons share about a dozen inputs, so a large part of the first
+   counting step is shared. Sharing is only used where it never makes a neuron's chain of
+   LUTs longer.
+6. A short chain of LUTs compares that count with the threshold and directly produces the
    neuron's yes/no output, without ever building the full sum.
-6. For every neuron, several tree shapes are tried and the cheapest is kept; identical LUTs
+7. For every neuron, several tree shapes are tried and the cheapest is kept; identical LUTs
    are shared and unused ones removed.
 
 **How correctness is checked.** Every circuit is simulated and its outputs compared with the
@@ -50,11 +58,14 @@ with a version that ignores sparsity.
 |---|---:|---:|
 | First version: partial sums added with adder chains | 43,424 | 31 |
 | Counting trees with a threshold comparator | 24,107 | 19 |
+| Counters spanning two binary positions; three-bit adders for 4-input LUTs | 22,481 | 17 |
+| Counters shared between neurons that read the same inputs | 19,140 | 17 |
 
-**Ideas ahead.** Counters that read two binary positions at once, sharing counters between
-neurons that read the same inputs, exactly optimal circuits for small neurons, choosing
-circuit shapes for the whole network's longest path, and benchmarks with networks trained on
-real tasks.
+**Ideas ahead.** Choosing the shared input groups better (covering every neuron's inputs
+as completely as possible, and sharing the later counting steps too), exactly optimal
+circuits for small neurons, choosing circuit shapes for the whole network's longest path,
+and benchmarks with networks trained on real tasks, where shared structure may differ from
+random networks.
 
 ## How it improves itself
 
