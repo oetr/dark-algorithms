@@ -192,6 +192,62 @@ def test_constant_and_merged_hidden_neurons_are_proven():
     assert prove_equivalence(net, nl).proven
 
 
+def counter_then_compare(compare_table: int, theta: int):
+    """A 6:3 counter over six inputs read by one comparator LUT, and its reference neuron.
+
+    The counter's three bits never read 7, so a comparator may differ from the threshold
+    there and still be correct, as the compiler's comparator chains do since they track the
+    exact range of their heap.
+    """
+    from dark_algorithms.ternary_lut import Netlist
+
+    nl = Netlist(k=6, num_inputs=6)
+    ins = tuple(nl.input_signal(i) for i in range(6))
+    for j in range(3):
+        table = sum(1 << r for r in range(64) if (bin(r).count("1") >> j) & 1)
+        nl.luts.append(Lut(ins, table))
+    bits = tuple(nl.first_lut_signal + j for j in range(3))
+    nl.luts.append(Lut(bits, compare_table))
+    nl.outputs = [nl.first_lut_signal + 3]
+    nl.layer_outputs = [list(nl.outputs)]
+    net = TernaryNetwork((TernaryLayer(np.ones((1, 6), dtype=np.int8), np.array([theta])),))
+    return net, nl
+
+
+def test_comparator_may_use_the_counters_range():
+    # count >= 6 as "bits read exactly 6": wrong only for the impossible count 7.
+    net, nl = counter_then_compare(1 << 6, theta=6)
+    assert (simulate(nl, all_vectors(6)) == net.forward(all_vectors(6))).all()
+    assert prove_equivalence(net, nl).proven
+
+
+def test_compiled_comparator_using_a_shared_counters_range_is_proven():
+    """Shared counters read inverted, skewed thresholds: the comparator relies on the range.
+
+    The proof used to treat counter outputs as free bits and refuted this correct circuit.
+    """
+    w = np.array(
+        [
+            [1, 1, -1, -1, -1, -1, 1, 0, 1, -1, -1, -1, -1],
+            [1, 1, -1, -1, -1, -1, 1, -1, 0, -1, 0, 0, -1],
+            [0, -1, 0, 1, 1, 0, 0, 1, -1, 1, 1, 1, 1],
+        ]
+    )
+    net = TernaryNetwork((TernaryLayer(w, np.array([4, -8, 1])),))
+    nl = compile_network(net, k=4)
+    x = all_vectors(13)
+    assert (simulate(nl, x) == net.forward(x)).all()
+    assert prove_equivalence(net, nl).proven
+
+
+def test_comparator_wrong_on_a_possible_count_is_not_proven():
+    # "bits read 7" never fires, but count 6 is possible: the circuit is wrong.
+    net, nl = counter_then_compare(1 << 7, theta=6)
+    assert not (simulate(nl, all_vectors(6)) == net.forward(all_vectors(6))).all()
+    result = prove_equivalence(net, nl)
+    assert not result.proven and result.refuted
+
+
 def test_missing_layer_outputs_are_not_proven():
     net = random_network([10, 4], 0.3, np.random.default_rng(0))
     nl = compile_network(net)
