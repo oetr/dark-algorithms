@@ -27,6 +27,23 @@ Pipeline: `model.py` (ternary network) -> `compiler.py` -> `netlist.py` (what we
 5. Run `ruff check . && ruff format --check . && pytest -q && python benchmarks/run.py` before
    opening a pull request.
 
+## The README
+
+The owner reads only README.md. Keep it about the goal and the algorithms, in plain language:
+no code, file names, function names, commands or setup steps. When a merged change alters how
+an algorithm works or moves the results, update the README's algorithm description, the
+progress table and the ideas ahead in the same pull request.
+
+## Setup and commands
+
+- Install: `pip install -e ".[dev]"` (add `[telemetry]` to export metrics).
+- Check: `ruff check . && ruff format --check . && pytest -q`.
+- Benchmark: `python benchmarks/run.py --output results.json`; compare two runs with
+  `python benchmarks/compare.py base.json head.json`.
+- CI exports results from `main` to Dash0 as `dark_algorithms.benchmark.*` metrics using the
+  repository secret `DASH0_AUTH_TOKEN` and the repository variable `DASH0_OTLP_ENDPOINT`
+  (the OTLP/HTTP base URL, no path).
+
 ## Known limits
 
 - The Dash0 GitHub App cannot push changes under `.github/workflows/` (GitHub refuses it
