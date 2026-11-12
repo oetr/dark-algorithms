@@ -73,7 +73,7 @@ with a version that ignores sparsity.
 hide that we are merely catching up. So every benchmark network is also built by Yosys/ABC,
 the standard open-source chip-design tools, under the same rules (small lookup tables only).
 The first version used more LUTs than Yosys/ABC on every network; today it uses fewer on
-every network Yosys/ABC finished:
+every network:
 
 | Network | Ours | Yosys/ABC | Difference | Longest chain: ours / Yosys/ABC |
 |---|---:|---:|---:|---|
@@ -82,8 +82,8 @@ every network Yosys/ABC finished:
 | 256 inputs, 90% zero weights | 2,819 | 4,095 | −31% | 10 / 12 |
 | 256 inputs, 95% zero weights | 743 | 1,025 | −28% | 7 / 8 |
 | 256 inputs, 90% zero weights, 4-input LUTs | 5,219 | 6,328 | −18% | 16 / 18 |
-| 256 inputs, 70% zero weights | 8,752 | not finished | | 17 / – |
-| **Total where both finished** | **10,025** | **13,634** | **−26.5%** | |
+| 256 inputs, 70% zero weights | 8,752 | 18,476 | −53% | 17 / 18 |
+| **Total** | **18,777** | **32,110** | **−41.5%** | |
 
 Real chips also have fast adder circuitry (carry chains) that this comparison does not use
 yet, and correctness of the largest networks is still checked by sampling rather than proven.
