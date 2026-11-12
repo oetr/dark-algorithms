@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: pytest -q
+
+  benchmark:
+    name: Benchmark and regression gate
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[telemetry]"
+
+      - name: Benchmark this commit
+        run: python benchmarks/run.py --output "$RUNNER_TEMP/head.json" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Benchmark the base branch
+        id: base
+        if: github.event_name == 'pull_request'
+        run: |
+          git worktree add "$RUNNER_TEMP/base" "${{ github.event.pull_request.base.sha }}"
+          if [ -f "$RUNNER_TEMP/base/benchmarks/run.py" ]; then
+            cd "$RUNNER_TEMP/base"
+            PYTHONPATH=src python benchmarks/run.py --output "$RUNNER_TEMP/base.json" > /dev/null
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "The base branch has no benchmark yet; skipping the regression gate." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Regression gate
+        if: steps.base.outputs.available == 'true'
+        run: |
+          echo "### Base vs. this pull request" >> "$GITHUB_STEP_SUMMARY"
+          python benchmarks/compare.py "$RUNNER_TEMP/base.json" "$RUNNER_TEMP/head.json" | tee -a "$GITHUB_STEP_SUMMARY"
+          exit "${PIPESTATUS[0]}"
+
+
+  export:
+    name: Export benchmark results to Dash0
+    runs-on: ubuntu-latest
+    needs: benchmark
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    env:
+      # The token lives only in this job, which runs only for commits already on main.
+      DASH0_AUTH_TOKEN: ${{ secrets.DASH0_AUTH_TOKEN }}
+      OTEL_EXPORTER_OTLP_ENDPOINT: ${{ vars.DASH0_OTLP_ENDPOINT }}
+    steps:
+      - name: Skip when Dash0 is not configured
+        if: env.DASH0_AUTH_TOKEN == '' || env.OTEL_EXPORTER_OTLP_ENDPOINT == ''
+        run: echo "Set the DASH0_AUTH_TOKEN secret and DASH0_OTLP_ENDPOINT variable to export results." >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/checkout@v4
+        if: env.DASH0_AUTH_TOKEN != '' && env.OTEL_EXPORTER_OTLP_ENDPOINT != ''
+      - uses: actions/setup-python@v5
+        if: env.DASH0_AUTH_TOKEN != '' && env.OTEL_EXPORTER_OTLP_ENDPOINT != ''
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Export
+        if: env.DASH0_AUTH_TOKEN != '' && env.OTEL_EXPORTER_OTLP_ENDPOINT != ''
+        run: |
+          pip install -e ".[telemetry]"
+          export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer $DASH0_AUTH_TOKEN"
+          python benchmarks/run.py --export-otlp > /dev/null
