@@ -1,4 +1,27 @@
 {
+  "digits-64-s70": {
+    "flow": "synth_xilinx -flatten -noiopad",
+    "network": {
+      "carry_cells": 326,
+      "cells": {
+        "CARRY4": 326,
+        "INV": 26,
+        "LUT2": 427,
+        "LUT3": 434,
+        "LUT4": 526,
+        "LUT5": 455,
+        "LUT6": 273,
+        "MUXF7": 9,
+        "MUXF8": 4
+      },
+      "lut_sites": 2141,
+      "mux_cells": 13,
+      "seconds": 840.7
+    },
+    "ours_through_flow": null,
+    "target": "xilinx-7series",
+    "tool": "Yosys 0.70"
+  },
   "mlp-256-s90": {
     "flow": "synth_xilinx -flatten -noiopad",
     "network": {

@@ -91,9 +91,23 @@ random inputs for larger ones), blocks the change.
 inputs, 50% to 95% zero weights, and LUTs with 4 or 6 inputs. Each change is also compared
 with a version that ignores sparsity.
 
+Six of the networks are random: every weight is drawn independently and every threshold
+sits in the middle of the neuron's possible sums. Real networks are not like that, so one
+network is trained on a real task: recognising handwritten digits from 8x8 pixel images,
+each pixel one input bit, with the same shape and the same share of zero weights (70%) as
+one of the random networks. It recognises 87% of digits it has not seen. Training leaves
+it with a structure random networks lack: a quarter of the pixels (the blank border) are
+read by no neuron, some neurons read 30 to 40 inputs and others none, thresholds sit
+far from the middle, and a few neurons always give the same answer. Its neurons also read
+the informative pixels together, so they share far more inputs: three quarters of the
+first layer's inputs can be counted by shared counters, against half in the random network
+of the same shape. Its circuit is 14% smaller than that random network's (946 against
+1,105 LUTs, same longest chain), while the free chip-design software we compare with below
+makes it slightly larger (2,111 against 2,083 LUTs) and needs three times as long for it.
+
 **Progress so far.**
 
-| Stage | Total LUTs across the benchmark | Longest LUT chain |
+| Stage | Total LUTs across the six random networks | Longest LUT chain |
 |---|---:|---:|
 | First version: partial sums added with adder chains | 43,424 | 31 |
 | Counting trees with a threshold comparator | 24,107 | 19 |
@@ -118,7 +132,8 @@ every network:
 | 256 inputs, 95% zero weights | 729 | 1,025 | −29% | 6 / 8 |
 | 256 inputs, 90% zero weights, 4-input LUTs | 4,956 | 6,328 | −22% | 15 / 18 |
 | 256 inputs, 70% zero weights | 8,467 | 18,476 | −54% | 15 / 18 |
-| **Total** | **18,034** | **32,110** | **−43.8%** | |
+| 64 inputs, 70% zero weights, trained on digits | 946 | 2,111 | −55% | 11 / 14 |
+| **Total** | **18,980** | **34,221** | **−44.5%** | |
 
 **Compared with free chip-design software on real chips.** Real FPGAs also have dedicated
 adder circuitry (carry chains) next to their lookup tables, which makes adding and comparing
@@ -127,8 +142,8 @@ approach like ours, which avoids adders. So every benchmark network is also buil
 same free tools' flows for two real chip families that use carry chains: a Xilinx-style chip
 with 6-input lookup tables, and a Lattice chip with 4-input lookup tables for the 4-input
 network. Our circuits need no carry chains at all and fit those chips one lookup table for
-one. They still use about a third fewer lookup tables, and the free tools additionally use
-2,350 carry cells:
+one. They still use more than a third fewer lookup tables, and the free tools additionally
+use 2,676 carry cells:
 
 | Network | Chip | Ours | Free tools | Difference | Free tools' carry cells |
 |---|---|---:|---:|---:|---:|
@@ -137,7 +152,8 @@ one. They still use about a third fewer lookup tables, and the free tools additi
 | 256 inputs, 90% zero weights | Xilinx-style | 2,706 | 4,244 | −36% | 554 |
 | 256 inputs, 95% zero weights | Xilinx-style | 729 | 1,175 | −38% | 248 |
 | 256 inputs, 90% zero weights, 4-input LUTs | Lattice | 4,956 | 6,934 | −29% | 1,200 |
-| **Total** | | **9,567** | **14,621** | **−34.6%** | **2,350** |
+| 64 inputs, 70% zero weights, trained on digits | Xilinx-style | 946 | 2,141 | −56% | 326 |
+| **Total** | | **10,513** | **16,762** | **−37.3%** | **2,676** |
 
 The 256-input network with 70% zero weights is not in this table yet: the free tools need
 more than nine minutes for it. Handing our finished circuits to the same tools makes them
@@ -151,8 +167,8 @@ longest LUT chain in mind), counting only as much as
 each binary position needs in every step of the tree and picking the best counter for each
 position by search, letting the counting tree know which bits the planned comparison
 chain will take, exactly optimal circuits for small neurons, trading a little depth for
-fewer LUTs where it pays, benchmarks with networks trained on real tasks, where shared
-structure may differ from random networks, a speed comparison on real chips that accounts for
+fewer LUTs where it pays, larger trained networks (for example the layer shapes used by
+published FPGA networks for images and particle physics), a speed comparison on real chips that accounts for
 fast carry chains, and using the chips' carry chains ourselves where they save lookup tables.
 
 ## How it improves itself

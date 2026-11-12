@@ -32,7 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from suite import SUITE  # noqa: E402
 
-from dark_algorithms.ternary_lut import TernaryNetwork, random_network  # noqa: E402
+from dark_algorithms.ternary_lut import TernaryNetwork  # noqa: E402
 
 BASELINE_PATH = Path(__file__).resolve().parent / "yosys_baseline.json"
 
@@ -172,7 +172,7 @@ def main() -> int:
     for case in SUITE:
         if args.cases and case.name not in args.cases:
             continue
-        net = random_network(case.layer_sizes, case.sparsity, np.random.default_rng(case.seed))
+        net = case.network()
         try:
             baseline[case.name] = synthesize(net, case.k, args.timeout)
         except subprocess.TimeoutExpired:
