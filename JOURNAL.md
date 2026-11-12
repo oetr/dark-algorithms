@@ -3,6 +3,32 @@
 Ideas tried by the agents improving this repository, newest first, including the ones that
 did not work, so later runs don't repeat them. One entry per idea: date, idea, result.
 
+## 2026-11-12 - lazy last counter stage and critical-path-aware neuron versions
+
+- Idea: the last Wallace stage compresses every too-tall column as far as it can, so a
+  77-input neuron at target height 4 ends with 13 heap bits where 25 would fit. Counters
+  remove about one bit per LUT and the comparator about two, so those bits are cheaper left
+  in the heap. Option: in the last stage remove from each column only its excess over the
+  target (counting the bits lower columns' counters pass up), used only if that one stage
+  reaches the target, so the stage count stays Wallace's. E.g. a 9-input majority at k=6
+  takes 4 LUTs instead of 6, a 16-input one 9 instead of 12, at the same depth.
+- Picking per neuron by LUTs first with the lazy option gave 22,021 LUTs but made two cases
+  one level deeper (mlp-256-s90 10 -> 11, k=4 16 -> 17); a per-layer depth budget (deepest
+  neuron's shallowest version) fixed k=4 but not mlp-256-s90, because filling a layer's slack
+  delays the next layer's inputs; plain shallowest-first per neuron gave 22,163 LUTs at the
+  old depths. Kept: a first pass builds every neuron shallowest-first, fixing the depth D
+  and each neuron's longest path to an output; the second pass gives each neuron the
+  cheapest version that arrives by D minus that path. The first pass's version always fits,
+  so the network is never deeper than the all-shallowest one.
+- Result: total 22,481 -> 22,026 LUTs (-2.0%), worst depth 17 -> 17, no case deeper; every
+  case improves (tiny 101 -> 85, mlp-64-s70 1,434 -> 1,336, mlp-256-s90 3,020 -> 2,898,
+  mlp-256-s95 830 -> 743, mlp-256-s70 11,251 -> 11,138, k=4 5,845 -> 5,826). Benchmark
+  time 13 s -> 37 s (twice the options, two passes; layer-1 trials are reused).
+- Failed: a full Dadda schedule (every stage reduces each column only to a height sequence
+  d, 6 * floor(d / 3) at k=6) as the only strategy: 25,527 LUTs, worst depth 25. The height
+  sequence assumes uniform columns, but the heap starts as one tall column, so it adds
+  stages; as an extra option next to Wallace it gave only 22,384 LUTs at depth 18.
+
 ## 2026-11-12 - two-column counters and full-adder groups as per-neuron options
 
 - Idea: in the Wallace stages, a column's short last group (3-5 bits at k=6) removes only

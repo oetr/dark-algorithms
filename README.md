@@ -34,10 +34,16 @@ disappears from the circuit. The sparser the network, the smaller the circuit ca
    A counter that would be left half empty also reads bits from the next binary position,
    so it removes as many bits per LUT as a full one. With 4-input LUTs, where a four-bit
    counter is wasteful, the bits can instead be counted in groups of three (full adders).
+   In the last step of the tree, each binary position can also be counted only as far as
+   needed to reach the target height instead of as far as possible, because a bit the
+   comparator below takes in costs about half as much as removing it with a counter.
 5. A short chain of LUTs compares that count with the threshold and directly produces the
    neuron's yes/no output, without ever building the full sum.
-6. For every neuron, several tree shapes and counter kinds are tried and the cheapest is
-   kept; identical LUTs are shared and unused ones removed.
+6. For every neuron, several tree shapes and counter kinds are tried. The whole network is
+   first built with every neuron in its shallowest form, which fixes the longest LUT chain
+   of the network. Then every neuron gets its cheapest form that does not lengthen that
+   chain, so neurons off the critical path can be deeper and smaller. Identical LUTs are
+   shared and unused ones removed.
 
 **How correctness is checked.** Every circuit is simulated and its outputs compared with the
 original network: on every possible input for networks with up to 16 inputs, and on
@@ -54,11 +60,13 @@ with a version that ignores sparsity.
 | First version: partial sums added with adder chains | 43,424 | 31 |
 | Counting trees with a threshold comparator | 24,107 | 19 |
 | Counters spanning two binary positions, full adders for 4-input LUTs | 22,481 | 17 |
+| Counting only as far as needed in the last step, choosing forms along the critical path | 22,026 | 17 |
 
-**Ideas ahead.** Counting only as much as each binary position needs and picking the best
-counter for each position by search, sharing counters between neurons that read the same
-inputs, exactly optimal circuits for small neurons, choosing circuit shapes for the whole
-network's longest path, and benchmarks with networks trained on real tasks.
+**Ideas ahead.** Counting only as much as each binary position needs in every step of the
+tree, not just the last, and picking the best counter for each position by search; sharing
+counters between neurons that read the same inputs; exactly optimal circuits for small
+neurons; trading a little depth for fewer LUTs where it pays; and benchmarks with networks
+trained on real tasks.
 
 ## How it improves itself
 
