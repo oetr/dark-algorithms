@@ -41,8 +41,13 @@ disappears from the circuit. The sparser the network, the smaller the circuit ca
    all with opposite signs, which costs nothing to undo). Such a group of inputs is counted
    once and the count is shared by every neuron that needs it. In a network with 70% zero
    weights almost any two neurons share about a dozen inputs, so a large part of the first
-   counting step is shared. Sharing is only used where it does not make the longest chain
-   of LUTs longer.
+   counting step is shared. Every shared group uses up inputs that other pairs of neurons
+   could also have shared, so the groups are handed out like a matching: the neuron with the
+   fewest possible partners left is served first, together with its partner that has the
+   fewest options itself, and a group takes the common inputs that the fewest other neurons
+   still have. In the largest network this shares 83% of the first layer's inputs, where
+   always pairing the two neurons with the most in common shared 71%. Sharing is only used
+   where it does not make the longest chain of LUTs longer.
 6. A short chain of LUTs compares that count with the threshold and directly produces the
    neuron's yes/no output, without ever building the full sum.
 7. For every neuron, several tree shapes and counter kinds are tried. The whole network is
@@ -79,6 +84,7 @@ with a version that ignores sparsity.
 | Counters spanning two binary positions, full adders for 4-input LUTs | 22,481 | 17 |
 | Counters shared between neurons that read the same inputs | 19,140 | 17 |
 | Counting only as far as needed in the last step, choosing forms along the critical path | 18,777 | 17 |
+| Shared input groups handed out most-constrained neuron first | 18,471 | 16 |
 
 **Compared with free chip-design software.** Progress against our own earlier versions can
 hide that we are merely catching up. So every benchmark network is also built by Yosys/ABC,
@@ -89,12 +95,12 @@ every network:
 | Network | Ours | Yosys/ABC | Difference | Longest chain: ours / Yosys/ABC |
 |---|---:|---:|---:|---|
 | 16 inputs, 50% zero weights | 76 | 103 | −26% | 4 / 5 |
-| 64 inputs, 70% zero weights | 1,168 | 2,083 | −44% | 11 / 13 |
-| 256 inputs, 90% zero weights | 2,819 | 4,095 | −31% | 10 / 12 |
+| 64 inputs, 70% zero weights | 1,124 | 2,083 | −46% | 11 / 13 |
+| 256 inputs, 90% zero weights | 2,807 | 4,095 | −31% | 10 / 12 |
 | 256 inputs, 95% zero weights | 743 | 1,025 | −28% | 7 / 8 |
-| 256 inputs, 90% zero weights, 4-input LUTs | 5,219 | 6,328 | −18% | 16 / 18 |
-| 256 inputs, 70% zero weights | 8,752 | 18,476 | −53% | 17 / 18 |
-| **Total** | **18,777** | **32,110** | **−41.5%** | |
+| 256 inputs, 90% zero weights, 4-input LUTs | 5,129 | 6,328 | −19% | 16 / 18 |
+| 256 inputs, 70% zero weights | 8,592 | 18,476 | −54% | 16 / 18 |
+| **Total** | **18,471** | **32,110** | **−42.5%** | |
 
 **Compared with free chip-design software on real chips.** Real FPGAs also have dedicated
 adder circuitry (carry chains) next to their lookup tables, which makes adding and comparing
@@ -109,11 +115,11 @@ one. They still use about a third fewer lookup tables, and the free tools additi
 | Network | Chip | Ours | Free tools | Difference | Free tools' carry cells |
 |---|---|---:|---:|---:|---:|
 | 16 inputs, 50% zero weights | Xilinx-style | 76 | 134 | −43% | 35 |
-| 64 inputs, 70% zero weights | Xilinx-style | 1,168 | 2,134 | −45% | 313 |
-| 256 inputs, 90% zero weights | Xilinx-style | 2,819 | 4,244 | −34% | 554 |
+| 64 inputs, 70% zero weights | Xilinx-style | 1,124 | 2,134 | −47% | 313 |
+| 256 inputs, 90% zero weights | Xilinx-style | 2,807 | 4,244 | −34% | 554 |
 | 256 inputs, 95% zero weights | Xilinx-style | 743 | 1,175 | −37% | 248 |
-| 256 inputs, 90% zero weights, 4-input LUTs | Lattice | 5,219 | 6,934 | −25% | 1,200 |
-| **Total** | | **10,025** | **14,621** | **−31.4%** | **2,350** |
+| 256 inputs, 90% zero weights, 4-input LUTs | Lattice | 5,129 | 6,934 | −26% | 1,200 |
+| **Total** | | **9,879** | **14,621** | **−32.4%** | **2,350** |
 
 The 256-input network with 70% zero weights is not in this table yet: the free tools need
 more than nine minutes for it. Handing our finished circuits to the same tools makes them
@@ -121,8 +127,9 @@ more than nine minutes for it. Handing our finished circuits to the same tools m
 our circuits are best placed on the chip exactly as built. The longest chain is not compared
 here, because a carry chain is much faster than a chain of lookup tables of the same length.
 
-**Ideas ahead.** Choosing the shared input groups better (covering every neuron's inputs as
-completely as possible, and sharing the later counting steps too), counting only as much as
+**Ideas ahead.** Choosing the shared input groups better still (covering every neuron's
+inputs completely, groups shared by more than two neurons, and choosing the groups with the
+longest LUT chain in mind), counting only as much as
 each binary position needs in every step of the tree and picking the best counter for each
 position by search, exactly optimal circuits for small neurons, trading a little depth for
 fewer LUTs where it pays, benchmarks with networks trained on real tasks, where shared
