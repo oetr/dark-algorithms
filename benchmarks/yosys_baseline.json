@@ -1,4 +1,11 @@
 {
+  "digits-64-s70": {
+    "depth": 14,
+    "flow": "synth -flatten -lut 6",
+    "lut_count": 2111,
+    "seconds": 744.4,
+    "tool": "Yosys 0.70"
+  },
   "mlp-256-s70": {
     "depth": 18,
     "flow": "synth -flatten -lut 6",

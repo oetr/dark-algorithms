@@ -3,6 +3,37 @@
 Ideas tried by the agents improving this repository, newest first, including the ones that
 did not work, so later runs don't repeat them. One entry per idea: date, idea, result.
 
+## 2026-11-12 - a benchmark network trained on a real task (digits-64-s70)
+
+- Why: every case was a random network (independent weights, thresholds centred on the
+  expected sum), so every compiler change was tuned on structure no trained network has.
+  Compiler headroom is also thin: per-neuron counting trees are near their bound (in
+  mlp-256-s90's first layer the network costs 2,399 LUTs against 2,496 for every neuron's
+  cheapest version built alone; in the k=4 case 4,100 of 4,956 LUTs are 3-input full-adder
+  LUTs, the value-preserving limit at k=4), and re-carving shared groups with 20 randomised
+  tie-breaks gained only ~50 LUTs (k=4 layer 1 +26, mlp-256-s70 layer 2 +15, mlp-64-s70
+  layer 2 +6; not kept). So the measurement was the better place to spend this run.
+- Idea: train a ternary threshold MLP on scikit-learn's bundled digits (8x8 pixels as bits,
+  ink >= 8 of 16), 64 -> 64 -> 32 -> 10 at 70% zeros, the shape and sparsity of mlp-64-s70,
+  so the two cases compare a trained and a random network directly. Straight-through
+  training: per-layer magnitude quantile ternarization, hard threshold activations, integer
+  thresholds from rounded biases in every forward pass, squared hinge loss on one-vs-rest
+  outputs. Seeded; the weights are committed as JSON and the benchmark never retrains.
+- Result: 87.2% test accuracy (exactly the true digit's output is 1; 90.0% train). The
+  network: 17 of 64 pixels read by no neuron, fan-in 0-34 in layer 1 and 0-41 in layer 2
+  (random: 9-30, 10-27), mean |threshold - centre| 2.6 / 1.9 / 3.5 (random: at most 1.5), 6 dead
+  neurons. Shared-group coverage of layer 1 is 74% (902 of 1,223 literals) against 49% in
+  mlp-64-s70: neurons concentrate on the same informative pixels, so sharing pays more on
+  trained networks. Circuit: 946 LUTs, depth 11, proven, against 1,105 / 11 for mlp-64-s70.
+  Yosys/ABC: YLUT LUTs, depth YDEPTH (YDIFF); vendor flow (Xilinx): FLUT LUT sites and
+  FCARRY carry cells (FDIFF). Existing cases unchanged (18,034 LUTs, worst depth 15).
+- Tried first: 80% zeros; 13 of 64 first-layer neurons came out dead, so 70% (matching an
+  existing random case) was kept. lr 0.005-0.1 and 60-150 epochs gave 32-86% test accuracy.
+- Next: larger trained cases in published FPGA network shapes (e.g. LogicNets' jet-tagging
+  16-64-32-32-32-5, MNIST at 784 inputs once compile time allows), and compiler work aimed at
+  trained structure: dead neurons already fold to constants, but uneven fan-in and
+  heavily overlapping inputs favour sharing groups across more than two neurons.
+
 ## 2026-11-12 - comparator chain planned as a whole, with partial-column steps
 
 - Why: the counters are at their information limit for value-preserving compression (a 6:3

@@ -29,6 +29,10 @@ with no carry cells, so our LUT sites there are our LUT count.
 3. Depth is not yet compared on the vendor targets (a carry chain is much faster than a LUT
    level); a timing-aware comparison, and using carry chains in our own circuits where they
    save LUTs, are open.
+4. Six cases are random networks; digits-64-s70 is trained on a real task (same shape and
+   sparsity as mlp-64-s70) and has uneven fan-in, off-centre thresholds, dead neurons and much
+   more input overlap between neurons. Report it separately when a change helps the random
+   cases but not the trained one. Larger trained cases (published FPGA network shapes) are open.
 
 Every benchmark circuit is formally proven equivalent to its network (`prove.py`, reported
 as `proven` per case); the regression gate fails when a case the base proved is no longer
@@ -73,6 +77,9 @@ progress table and the ideas ahead in the same pull request.
   Regenerate `benchmarks/fpga_baseline.json` when the suite changes; its `ours_through_flow`
   entries (our circuit handed to the vendor flow) are informational and go stale as the
   compiler changes. The 256-input cases take 15-35 s each, mlp-256-s70 over 9 minutes.
+- Trained cases: `benchmarks/networks/*.json`, produced by `python benchmarks/train_digits.py`
+  (needs the `train` extra, scikit-learn; seeded and reproducible). The benchmark only reads
+  the stored file. A new trained case needs its Yosys and vendor-flow baselines generated.
 - Check: `ruff check . && ruff format --check . && pytest -q`.
 - Benchmark: `python benchmarks/run.py --output results.json`; compare two runs with
   `python benchmarks/compare.py base.json head.json`.
