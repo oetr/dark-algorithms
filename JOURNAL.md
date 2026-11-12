@@ -3,6 +3,41 @@
 Ideas tried by the agents improving this repository, newest first, including the ones that
 did not work, so later runs don't repeat them. One entry per idea: date, idea, result.
 
+## 2026-11-12 - lazy last counter stage and critical-path-aware neuron versions
+
+- Idea: the last Wallace stage compresses every too-tall column as far as it can, so a
+  77-input neuron at target height 4 ends with 13 heap bits where 25 would fit. Counters
+  remove about one bit per LUT and the comparator about two, so those bits are cheaper left
+  in the heap. Option: in the last stage remove from each column only its excess over the
+  target (counting the bits lower columns' counters pass up), used only if that one stage
+  reaches the target, so the stage count stays Wallace's. E.g. a 9-input majority at k=6
+  takes 4 LUTs instead of 6, a 16-input one 9 instead of 12, at the same depth.
+- Picking per neuron by LUTs first with the lazy option gave 22,021 LUTs but made two cases
+  one level deeper (mlp-256-s90 10 -> 11, k=4 16 -> 17); a per-layer depth budget (deepest
+  neuron's shallowest version) fixed k=4 but not mlp-256-s90, because filling a layer's slack
+  delays the next layer's inputs; plain shallowest-first per neuron gave 22,163 LUTs at the
+  old depths. Kept: a first pass builds every neuron shallowest-first, fixing the depth D
+  and each neuron's longest path to an output; the second pass gives each neuron the
+  cheapest version that arrives by D minus that path. The first pass's version always fits,
+  so the network is never deeper than the all-shallowest one.
+- Result before counters were shared: 22,481 -> 22,026 LUTs (-2.0%), worst depth 17 -> 17.
+- Rebased onto shared counters (the pull request was opened before they merged): the lazy
+  option is also tried for shared neurons, the two passes run under both sharing depth
+  policies (four builds, the shallowest then smallest is kept; each policy wins some case),
+  and a shared neuron is held to min(its sharing depth limit, its required level). Total
+  19,140 -> 18,777 LUTs (-1.9%), worst depth 17 -> 17, no case deeper, every case smaller:
+  tiny 86 -> 76, mlp-64-s70 1,223 -> 1,168, mlp-256-s90 2,935 -> 2,819,
+  mlp-256-s95 830 -> 743, mlp-256-s70 8,833 -> 8,752, k=4 5,233 -> 5,219. Benchmark time
+  84 s -> 273 s, most of it the dense baseline. The dense baseline of mlp-256-s70 grows
+  (12,765 -> 13,604) because the shallowest network is preferred, so its lut_reduction
+  rises 30.8% -> 35.7% partly for that reason; the gate compares only the sparse circuits.
+- Seen but not taken: under the per-layer sharing policy mlp-256-s90 reaches 2,737 LUTs at
+  depth 11 instead of 2,819 at depth 10 (the gate rejects any depth increase).
+- Failed: a full Dadda schedule (every stage reduces each column only to a height sequence
+  d, 6 * floor(d / 3) at k=6) as the only strategy: 25,527 LUTs, worst depth 25. The height
+  sequence assumes uniform columns, but the heap starts as one tall column, so it adds
+  stages; as an extra option next to Wallace it gave only 22,384 LUTs at depth 18.
+
 ## 2026-11-12 - counters shared across the neurons of a layer
 
 - Idea: neurons of a layer that contain the same k literals (k=6; full adders at k=4),

@@ -14,7 +14,13 @@ from dark_algorithms.ternary_lut import (
     random_network,
     simulate,
 )
-from dark_algorithms.ternary_lut.compiler import BitHeap, Elem, _Builder, find_shared_groups
+from dark_algorithms.ternary_lut.compiler import (
+    BitHeap,
+    Elem,
+    _Builder,
+    _compile,
+    find_shared_groups,
+)
 from dark_algorithms.ternary_lut.netlist import CONST0, CONST1
 
 
@@ -136,7 +142,8 @@ def test_short_groups_borrow_next_column_bits_only_when_it_pays():
 
 @pytest.mark.parametrize("k", [4, 5, 6])
 @pytest.mark.parametrize(("gpc", "group_size"), [(False, 0), (True, 0), (False, 3), (True, 3)])
-def test_compression_variants_are_exact(k, gpc, group_size):
+@pytest.mark.parametrize(("lazy", "max_height"), [(False, 2), (True, 2), (True, 3)])
+def test_compression_variants_are_exact(k, gpc, group_size, lazy, max_height):
     # 7 bits of weight 1, 6 of weight 2 (one inverted), 3 of weight 4: value range 0..31.
     n_inputs = 16
     weights = np.array([1] * 7 + [2] * 6 + [4] * 3)
@@ -148,10 +155,29 @@ def test_compression_variants_are_exact(k, gpc, group_size):
         for i, w in enumerate(weights):
             s = b.netlist.input_signal(i)
             heap.extend(int(w).bit_length() - 1, [Elem(s, 1, 0) if i == 7 else Elem(s)])
-        b.compress(heap, max_height=2, gpc=gpc, group_size=group_size)
+        b.compress(heap, max_height=max_height, gpc=gpc, group_size=group_size, lazy=lazy)
+        assert heap.max_height() <= max_height
         b.netlist.outputs = [b.heap_at_least(heap, threshold)]
         out = simulate(b.netlist.sweep(), x).ravel()
-        assert (out == (value >= threshold)).all(), (k, gpc, group_size, threshold)
+        assert (out == (value >= threshold)).all(), (k, gpc, group_size, lazy, threshold)
+
+
+@pytest.mark.parametrize(("n", "max_height", "wallace", "lazy"), [(9, 4, 6, 4), (16, 6, 12, 9)])
+def test_lazy_last_stage_leaves_bits_to_the_comparator(n, max_height, wallace, lazy):
+    # The last Wallace stage over-compresses (9 bits -> 6:3 + 3:2 counters); the lazy stage
+    # only removes the excess over max_height, with the same number of stages.
+    x = all_vectors(n)
+    results = {}
+    for mode in (False, True):
+        b = _Builder(k=6, num_inputs=n)
+        heap = BitHeap(cols={0: [Elem(b.netlist.input_signal(i)) for i in range(n)]})
+        b.compress(heap, max_height=max_height, lazy=mode)
+        out = b.heap_at_least(heap, n // 2)
+        b.netlist.outputs = [out]
+        assert (simulate(b.netlist, x).ravel() == (x.sum(axis=1) >= n // 2)).all()
+        results[mode] = (b.netlist.lut_count(), b.level(out))
+    assert results[False] == (wallace, results[True][1])
+    assert results[True][0] == lazy
 
 
 def test_full_adders_shrink_wide_neurons_at_k4():
@@ -211,6 +237,33 @@ def test_wide_neuron_beats_ripple_carry_adder_tree():
 
 
 # -- end to end --------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("share", [False, True])
+def test_network_is_never_deeper_than_its_shallowest_build(share):
+    # The second pass may give neurons off the critical path deeper, cheaper versions, but
+    # never more depth than building every neuron in its shallowest version.
+    for k, seed in ((6, 0), (4, 1)):
+        net = random_network([96, 48, 24, 6], 0.7, np.random.default_rng(seed))
+        shallow, _ = _compile(net, k, True, True, share, {})
+        shallow_nl = shallow.netlist.sweep()
+        nl = compile_network(net, k=k, share_counters=share)
+        assert check_equivalence(net, nl, num_samples=2048).equivalent
+        assert nl.depth() <= shallow_nl.depth()
+        assert nl.lut_count() < shallow_nl.lut_count()
+
+
+def test_neuron_respects_its_required_level():
+    w = np.random.default_rng(4).choice(np.array([-1, 1]), size=40)
+    b = _Builder(k=6, num_inputs=40)
+    terms = [(b.netlist.input_signal(i), int(v)) for i, v in enumerate(w)]
+    tried = {}
+    cheapest = b.trial(lambda: b.neuron(terms, 0, costs=tried))
+    shallowest = b.trial(lambda: b.neuron(terms, 0, shallowest=True, costs=tried))
+    assert shallowest[1] <= cheapest[1] and shallowest[0] >= cheapest[0]
+    capped = b.trial(lambda: b.neuron(terms, 0, max_level=shallowest[1], costs=tried))
+    assert capped[1] <= shallowest[1] and capped[0] <= shallowest[0]
+    assert len(tried) == 1  # the trial results were reused
 
 
 def test_small_neuron_compiles_to_one_lut():

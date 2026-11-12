@@ -23,9 +23,16 @@ Strategy:
   LUT) can be filled with bits of the next column, a two-column counter such as (1,5;3);
   and when a k-bit counter removes less than one bit per two LUTs (k=4), columns can be
   cut into full adders (3-bit groups) instead.
+* Lazy last stage: a Wallace stage compresses every column that is too tall as far as it
+  can, so the last stage often leaves columns well below the target height. Those bits
+  would have been cheaper in the comparator (about two bits per LUT, against one bit per
+  LUT in a counter). As an option, the last stage only removes as many bits from each
+  column as it needs to reach the target height, counting the bits lower columns' counters
+  pass up; it is used only when it reaches the target in that one stage, so the number of
+  stages is the same as Wallace's.
 * Tall columns mean fewer counters but a longer chain, so every neuron is built for each
-  target column height 2..k and each applicable counter shape, and the cheapest version
-  (fewest new LUTs, then least depth) is kept.
+  target column height 2..k and each applicable counter shape, with and without the lazy
+  last stage.
 * Counters shared across neurons: neurons of one layer that contain the same k literals
   (or all of them inverted: the count is then g - c, i.e. the counter's bits inverted
   plus a constant, which folds into the reading LUTs) read one shared k-input counter
@@ -36,6 +43,13 @@ Strategy:
   as above. Shared neurons must stay within a depth limit, either the depth their layer
   reaches without sharing or their own, and the network keeps the shallower (then
   smaller) of the two; a neuron with no version within its limit is built alone.
+* Which version a neuron gets depends on the network's critical path: a first pass builds
+  every neuron alone in its shallowest version (fewest LUTs among those) and fixes the
+  network depth D; the second pass gives every neuron the cheapest version whose output
+  level is at most D minus the longest path from that neuron to an output in the first
+  pass (shared neurons are held to that level as well as to their sharing limit). Both
+  passes run under both sharing depth policies and the shallowest, then smallest, of the
+  four networks is kept.
 * Identical LUTs are shared (structural hashing), constant LUTs become constant
   signals, and LUTs no output depends on are swept away.
 
@@ -43,11 +57,13 @@ Known headroom, roughly in order of expected payoff:
   - a better choice of shared groups: an exact cover of each neuron's literals instead of
     the greedy pair-first carving, groups shared across more neurons, and shared second-
     stage counters (a 70%-sparse layer still builds about 0.7 LUTs per literal),
-  - GPC shapes chosen per column by a small search instead of the greedy fill (a Dadda-
-    style lazy schedule was tried and only saved 0.3%, see JOURNAL.md),
+  - GPC shapes chosen per column by a small search instead of the greedy fill (a lazy
+    schedule for every stage, not just the last, was tried and only saved 0.3%, see
+    JOURNAL.md),
   - exact synthesis for small cones,
-  - choosing per-neuron structures against the network's critical path instead of
-    neuron-local depth or the per-neuron depth limit.
+  - required levels from a true backward timing pass over the final netlist instead of
+    the first pass's paths, a shared-neuron trial cache (the benchmark now takes ~4.5
+    minutes), and trading depth for LUTs beyond the shallowest network.
 
 Setting `prune_zeros=False` compiles every weight, zero or not, as if the
 hardware could not exploit sparsity. It is the baseline the eval compares against.
@@ -171,13 +187,20 @@ class _Builder:
         out = build()
         outs = [out] if isinstance(out, int) else list(out)
         cost = (len(self.netlist.luts) - mark, [self._level[s] for s in outs])
+        self._undo(mark)
+        return cost
+
+    def level(self, signal: int) -> int:
+        return self._level[signal]
+
+    def _undo(self, mark: int) -> None:
+        """Remove every LUT added after the netlist had `mark` LUTs."""
         first_new = self.netlist.first_lut_signal + mark
         del self.netlist.luts[mark:]
         del self._level[first_new:]
         for key in self._added[mark:]:
             del self._cache[key]
         del self._added[mark:]
-        return cost
 
     # -- popcount threshold: compressor tree + comparator chain ------------------------------
 
@@ -222,7 +245,12 @@ class _Builder:
         return best
 
     def compress(
-        self, heap: BitHeap, max_height: int, gpc: bool = False, group_size: int = 0
+        self,
+        heap: BitHeap,
+        max_height: int,
+        gpc: bool = False,
+        group_size: int = 0,
+        lazy: bool = False,
     ) -> None:
         """Wallace-style reduction with k-input counters until no column exceeds max_height.
 
@@ -230,31 +258,59 @@ class _Builder:
         to k bits; a group of g bits becomes ceil(log2(g + 1)) bits spread over the next
         columns, so a k=6 group (a 6:3 counter) removes three bits for three LUTs. With
         `gpc`, a column's short last group also takes bits of the next column (see
-        borrow_count).
+        borrow_count). With `lazy`, a stage that can reach max_height by removing only the
+        bits each column has in excess does just that (see _stage), and otherwise falls back
+        to a full Wallace stage, so the stage count does not change.
+        """
+        while heap.max_height() > max_height:
+            if lazy:
+                mark = len(self.netlist.luts)
+                saved = ({c: list(v) for c, v in heap.cols.items()}, heap.offset)
+                self._stage(heap, max_height, gpc, group_size, lazy=True)
+                if heap.max_height() <= max_height:
+                    return
+                self._undo(mark)
+                heap.cols, heap.offset = saved
+            self._stage(heap, max_height, gpc, group_size, lazy=False)
+
+    def _stage(
+        self, heap: BitHeap, max_height: int, gpc: bool, group_size: int, lazy: bool
+    ) -> None:
+        """One level of counters.
+
+        Wallace (lazy=False): every column taller than max_height is cut into groups of up to
+        k bits. Lazy: columns are visited from the least significant one, and a column only
+        gets counters until its bits plus the counter outputs already passed up from lower
+        columns fit into max_height; a group of g bits leaves one bit in its column, so it
+        removes g - 1 there and is no larger than needed.
         """
         k = group_size or self.netlist.k
         # Groups of 1-2 bits remove nothing; only a target height of 1 needs half adders.
         min_group = 3 if max_height >= 2 else 2
-        while heap.max_height() > max_height:
-            nxt = BitHeap(offset=heap.offset)
-            for col in sorted(heap.cols):
-                elems = heap.cols[col]
-                if len(elems) <= max_height:
-                    nxt.extend(col, elems)
-                    continue
-                for i in range(0, len(elems), k):
-                    group = elems[i : i + k]
-                    if len(group) < min_group:
-                        nxt.extend(col, group)
-                        continue
-                    above: list[Elem] = []
-                    if gpc and len(group) < self.netlist.k:
-                        pool = heap.cols.get(col + 1, [])
-                        a = self.borrow_count(group, pool)
-                        above, heap.cols[col + 1] = pool[:a], pool[a:]
-                    for sig, j in self.counter(group, above):
-                        nxt.add_signal(col + j, sig)
-            heap.cols, heap.offset = nxt.cols, nxt.offset
+        nxt = BitHeap(offset=heap.offset)
+        for col in sorted(heap.cols):
+            elems = heap.cols[col]
+            if lazy:
+                excess = len(elems) + len(nxt.cols.get(col, [])) - max_height
+            else:
+                excess = len(elems) if len(elems) > max_height else 0
+            i = 0
+            while excess > 0 and i < len(elems):
+                size = min(k, len(elems) - i, excess + 1) if lazy else k
+                group = elems[i : i + size]
+                if len(group) < min_group:
+                    break
+                i += len(group)
+                excess -= len(group) - 1 if lazy else len(group)
+                above: list[Elem] = []
+                if gpc and len(group) < self.netlist.k:
+                    pool = heap.cols.get(col + 1, [])
+                    a = self.borrow_count(group, pool)
+                    above, heap.cols[col + 1] = pool[:a], pool[a:]
+                for sig, j in self.counter(group, above):
+                    nxt.add_signal(col + j, sig)
+            nxt.extend(col, elems[i:])
+        heap.cols, heap.offset = nxt.cols, nxt.offset
 
     def heap_at_least(self, heap: BitHeap, threshold: int) -> int:
         """Signal that is 1 iff the heap's value is >= threshold.
@@ -338,11 +394,24 @@ class _Builder:
             heap.add_signal(j, sig)
         return heap
 
-    def neuron(self, terms: Sequence[tuple[int, int]], threshold: int) -> int:
+    def neuron(
+        self,
+        terms: Sequence[tuple[int, int]],
+        threshold: int,
+        max_level: int | None = None,
+        shallowest: bool = False,
+        costs: dict | None = None,
+    ) -> int:
         """Signal that is 1 iff sum(w * x) >= threshold.
 
         With x' = 1 - x for every -1 weight, sum(w * x) = popcount(literals) - #negative, so
         the neuron is a popcount threshold over literals whose inversions cost nothing.
+
+        A wide neuron is built in the version with the fewest new LUTs (then least depth)
+        whose output level is at most max_level, or, with `shallowest`, in the version with
+        the least depth (then fewest LUTs). If no version meets max_level, the shallowest one
+        is used. `costs` caches the trial results of a neuron whose inputs arrive at the same
+        levels, so later passes over the network do not repeat them.
         """
         k = self.netlist.k
         if len(terms) <= k:
@@ -357,9 +426,9 @@ class _Builder:
         elems = [Elem(s, 1, 0) if w < 0 else Elem(s, 0, 1 if w > 0 else 0) for s, w in terms]
         literal_threshold = threshold + sum(1 for _, w in terms if w < 0)
 
-        def build(max_height: int, gpc: bool, group_size: int) -> int:
+        def build(max_height: int, gpc: bool, group_size: int, lazy: bool) -> int:
             heap = BitHeap(cols={0: list(elems)})
-            self.compress(heap, max_height=max_height, gpc=gpc, group_size=group_size)
+            self.compress(heap, max_height, gpc=gpc, group_size=group_size, lazy=lazy)
             return self.heap_at_least(heap, literal_threshold)
 
         # Tall columns mean fewer counter LUTs but a longer comparator chain, and the counter
@@ -370,9 +439,25 @@ class _Builder:
         outs = k.bit_length()
         group_sizes = (0, 3) if 2 * (k - outs) < outs else (0,)
         gpcs = (False, True) if k >= 5 else (False,)
-        options = [(h, gpc, g) for g in group_sizes for gpc in gpcs for h in range(2, k + 1)]
-        best = min(options, key=lambda o: (*self.trial(lambda: build(*o)), o))
-        return build(*best)
+        options = [
+            (h, gpc, g, lazy)
+            for lazy in (False, True)
+            for g in group_sizes
+            for gpc in gpcs
+            for h in range(2, k + 1)
+        ]
+        key = (tuple(terms), threshold, tuple(self._level[s] for s, _ in terms))
+        tried = costs.get(key) if costs is not None else None
+        if tried is None:
+            tried = [(*self.trial(lambda o=o: build(*o)), o) for o in options]
+            if costs is not None:
+                costs[key] = tried
+        by_depth = min(tried, key=lambda t: (t[1], t[0], t[2]))
+        if shallowest:
+            return build(*by_depth[2])
+        fits = [t for t in tried if max_level is None or t[1] <= max_level]
+        best = min(fits, key=lambda t: (t[0], t[1], t[2])) if fits else by_depth
+        return build(*best[2])
 
     def shared_neuron(
         self,
@@ -396,7 +481,9 @@ class _Builder:
         elems = [Elem(s, 1, 0) if w < 0 else Elem(s, 0, 1 if w > 0 else 0) for s, w in terms]
         literal_threshold += sum(1 for _, w in terms if w < 0)
 
-        def build(max_height: int, gpc: bool, group_size: int, first_stage: bool) -> int:
+        def build(
+            max_height: int, gpc: bool, group_size: int, first_stage: bool, lazy: bool
+        ) -> int:
             heap = BitHeap(cols={0: list(elems)} if elems else {})
             if first_stage and len(elems) >= 3:
                 self.compress(heap, max_height=len(elems) - 1, group_size=group_size)
@@ -412,14 +499,15 @@ class _Builder:
                     for col, bits in counter.cols.items():
                         heap.extend(col, [Elem(e.signal, e.hi, e.lo) for e in bits])
                         heap.offset -= len(bits) << col
-            self.compress(heap, max_height=max_height, gpc=gpc, group_size=group_size)
+            self.compress(heap, max_height, gpc=gpc, group_size=group_size, lazy=lazy)
             return self.heap_at_least(heap, literal_threshold)
 
         outs = k.bit_length()
         group_sizes = (0, 3) if 2 * (k - outs) < outs else (0,)
         gpcs = (False, True) if k >= 5 else (False,)
         options = [
-            (h, gpc, g, first)
+            (h, gpc, g, first, lazy)
+            for lazy in (False, True)
             for first in (True, False)
             for g in group_sizes
             for gpc in gpcs
@@ -512,11 +600,17 @@ def compile_layer(
     share: bool,
     prune_zeros: bool = True,
     depth_limits: Sequence[int] | None = None,
+    required: Sequence[int | None] | None = None,
+    shallowest: bool = False,
+    costs: dict | None = None,
 ) -> list[int]:
     """Output signals of one layer, optionally with counters shared across its neurons.
 
     `depth_limits` caps the depth of each neuron that reads shared counters (see
     _Builder.shared_neuron); compile_network passes each neuron's depth without sharing.
+    `required` gives each neuron the level its output has to reach (see compile_network),
+    `shallowest` builds every neuron alone in its shallowest version, and `costs` caches
+    the trial results of neurons built alone.
     """
     k = b.netlist.k
     groups = []
@@ -550,16 +644,34 @@ def compile_layer(
         ]
         threshold = int(thresholds[j])
         out = None
+        need = required[j] if required is not None else None
         if j in per_neuron:
             # Popcount threshold: every -1 weight in a shared group is an inverted literal.
             literal_threshold = threshold + sum(1 for i in grouped if row[i] < 0)
-            limit = depth_limits[j] if depth_limits is not None else None
+            limits = [x for x in (depth_limits[j] if depth_limits else None, need) if x]
+            limit = min(limits) if limits else None
             out = b.shared_neuron(terms, literal_threshold, per_neuron[j], limit)
         if out is None:  # not in a group, or no version around its groups is shallow enough
             all_terms = [(current[i], int(row[i])) for i in range(len(row))]
-            out = b.neuron([t for t in all_terms if t[1] != 0 or not prune_zeros], threshold)
+            out = b.neuron(
+                [t for t in all_terms if t[1] != 0 or not prune_zeros],
+                threshold,
+                max_level=need,
+                shallowest=shallowest,
+                costs=costs,
+            )
         outs.append(out)
     return outs
+
+
+def _paths_to_outputs(netlist: Netlist) -> list[int]:
+    """For every signal, the most LUTs on a path from it to an output (0 for an output)."""
+    down = [0] * netlist.num_signals
+    for n in range(len(netlist.luts) - 1, -1, -1):
+        sig = netlist.first_lut_signal + n
+        for s in netlist.luts[n].inputs:
+            down[s] = max(down[s], 1 + down[sig])
+    return down
 
 
 def compile_network(
@@ -571,46 +683,76 @@ def compile_network(
     """Compile `network` into a validated, swept k-LUT netlist with identical behaviour.
 
     Counters shared across a layer's neurons save LUTs, but a neuron's cheapest version
-    around them can be deeper. Two depth policies are compiled and the shallower network
-    (then the smaller) is kept: each shared neuron may reach the depth its layer reaches
-    without sharing, which saves the most LUTs, or only its own depth without sharing,
-    which can never deepen the network. `share_counters=False` builds every neuron alone.
+    around them can be deeper. Two depth policies for shared neurons are compiled: each may
+    reach the depth its layer reaches without sharing, or only its own depth without
+    sharing. `share_counters=False` builds every neuron alone.
+
+    For each policy the network is built twice. The first pass builds every neuron alone in
+    its shallowest version, which fixes the network depth D and, for every neuron, the
+    longest path from it to an output. The second pass gives every neuron the cheapest
+    version that still lets its output arrive by D minus that path, so neurons off the
+    critical path can use deeper, cheaper versions. Of all builds the shallowest network,
+    then the smallest, is kept.
     """
     if k < 3:
         raise ValueError("k must be at least 3 (the counters need 3-input LUTs)")
-    if not share_counters:
-        return _compile(network, k, prune_zeros, share=False)
+    costs: dict = {}
+    policies = (False, True) if share_counters else (None,)
     best = None
-    for per_neuron in (False, True):
-        netlist = _compile(network, k, prune_zeros, per_neuron=per_neuron)
-        key = (netlist.depth(), netlist.lut_count())
-        if best is None or key < best[0]:
-            best = (key, netlist)
-    return best[1]
+    for per_neuron in policies:
+        share = per_neuron is not None
+        first, signals = _compile(network, k, prune_zeros, bool(per_neuron), share, costs)
+        down = _paths_to_outputs(first.netlist)
+        depth = max((first.level(s) for s in first.netlist.outputs), default=0)
+        required = [depth - down[s] for s in signals]
+        second, _ = _compile(network, k, prune_zeros, bool(per_neuron), share, costs, required)
+        for b in (first, second):
+            netlist = b.netlist.sweep()
+            key = (netlist.depth(), netlist.lut_count())
+            if best is None or key < best[0]:
+                best = (key, netlist)
+    netlist = best[1]
+    netlist.validate()
+    return netlist
 
 
 def _compile(
-    network: TernaryNetwork, k: int, prune_zeros: bool, per_neuron: bool = True, share: bool = True
-) -> Netlist:
+    network: TernaryNetwork,
+    k: int,
+    prune_zeros: bool,
+    per_neuron: bool,
+    share: bool,
+    costs: dict,
+    required: Sequence[int] | None = None,
+) -> tuple[_Builder, list[int]]:
+    """Build the network layer by layer; returns the builder and every neuron's output signal.
+
+    With `required` None, neurons built alone get their shallowest version; otherwise neuron
+    number n (counting through all layers) gets its cheapest version within level
+    required[n], and shared neurons are held to that level too.
+    """
     b = _Builder(k, network.num_inputs)
     current = [b.netlist.input_signal(i) for i in range(network.num_inputs)]
+    signals: list[int] = []
     for layer in network.layers:
         w, t = layer.weights, layer.thresholds
+        need = required[len(signals) : len(signals) + len(t)] if required is not None else None
 
-        def build(share: bool, limits: list[int] | None = None, w=w, t=t, cur=current):
-            return compile_layer(b, w, t, cur, share, prune_zeros, limits)
+        def build(share: bool, limits: list[int] | None = None, w=w, t=t, cur=current, need=need):
+            return compile_layer(
+                b, w, t, cur, share, prune_zeros, limits, need, need is None, costs
+            )
 
         if not share:
             current = build(False)
-            continue
-        # Sharing is kept only for layers where it pays (fewest LUTs, then least depth).
-        plain_luts, levels = b.trial_levels(lambda: build(False))
-        plain = (plain_luts, max(levels, default=0))
-        if not per_neuron:
-            levels = [plain[1]] * len(levels)
-        shared = b.trial(lambda levels=levels: build(True, levels))
-        current = build(True, levels) if shared < plain else build(False)
+        else:
+            # Sharing is kept only for layers where it pays (fewest LUTs, then least depth).
+            plain_luts, levels = b.trial_levels(lambda: build(False))
+            plain = (plain_luts, max(levels, default=0))
+            if not per_neuron:
+                levels = [plain[1]] * len(levels)
+            shared = b.trial(lambda levels=levels: build(True, levels))
+            current = build(True, levels) if shared < plain else build(False)
+        signals.extend(current)
     b.netlist.outputs = current
-    netlist = b.netlist.sweep()
-    netlist.validate()
-    return netlist
+    return b, signals
