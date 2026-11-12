@@ -25,7 +25,7 @@ did not work, so later runs don't repeat them. One entry per idea: date, idea, r
   simulation confirms; otherwise the case is "not proven", which still fails the gate when
   the base proved it.
 - Result: circuits unchanged (18,034 LUTs, worst depth 15), all six cases proven, proof
-  time unchanged. Both trained networks are now proven at k=4 and k=6 (the one trained here:
+  time 2.2 s -> 2.7 s. Both trained networks are now proven at k=4 and k=6 (the one trained here:
   915 LUTs / depth 11 at k=6, 1,958 / 16 at k=4, against 1,105 / 11 for the random
   mlp-64-s70 of the same shape). Tests: a hand-built counter plus comparator that relies
   on the range (proven), one wrong on a possible count (refuted), and a compiled 13-input
