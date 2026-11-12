@@ -35,14 +35,12 @@ import tempfile
 import time
 from pathlib import Path
 
-import numpy as np
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from suite import SUITE  # noqa: E402
 from yosys_baseline import to_verilog, yosys_binary  # noqa: E402
 
-from dark_algorithms.ternary_lut import Netlist, compile_network, random_network  # noqa: E402
+from dark_algorithms.ternary_lut import Netlist, compile_network  # noqa: E402
 from dark_algorithms.ternary_lut.netlist import CONST0, CONST1, FIRST_INPUT  # noqa: E402
 
 FPGA_BASELINE_PATH = Path(__file__).resolve().parent / "fpga_baseline.json"
@@ -159,7 +157,7 @@ def main() -> int:
     for case in SUITE:
         if args.cases and case.name not in args.cases:
             continue
-        net = random_network(case.layer_sizes, case.sparsity, np.random.default_rng(case.seed))
+        net = case.network()
         try:
             network = synthesize_verilog(to_verilog(net), case.k, args.timeout)
         except subprocess.TimeoutExpired:

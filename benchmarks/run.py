@@ -18,15 +18,13 @@ import subprocess
 import sys
 from pathlib import Path
 
-import numpy as np
-
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fpga_baseline import load_fpga_baseline  # noqa: E402
 from suite import SUITE  # noqa: E402
 from yosys_baseline import load_baseline  # noqa: E402
 
-from dark_algorithms.ternary_lut import evaluate, random_network  # noqa: E402
+from dark_algorithms.ternary_lut import evaluate  # noqa: E402
 
 ALGORITHM = "ternary-nn-to-lut"
 
@@ -47,7 +45,7 @@ def run_suite() -> list[dict]:
     fpga = load_fpga_baseline()
     results = []
     for case in SUITE:
-        net = random_network(case.layer_sizes, case.sparsity, np.random.default_rng(case.seed))
+        net = case.network()
         r = {"case": case.name, "k": case.k, **evaluate(net, k=case.k).to_dict()}
         y = yosys.get(case.name)
         r["yosys_lut_count"] = y["lut_count"] if y else None
