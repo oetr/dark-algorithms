@@ -38,6 +38,52 @@ did not work, so later runs don't repeat them. One entry per idea: date, idea, r
   trained structure: dead neurons already fold to constants, but uneven fan-in and
   heavily overlapping inputs favour sharing groups across more than two neurons.
 
+## 2026-11-12 - proof checks comparators only on values their counters can produce
+
+- Why: a ternary network trained on the scikit-learn digits (64-64-32-10, 70% zero
+  weights, 80% of test images with exactly the right one-hot output) compiled to a
+  correct circuit at k=6: random simulation agreed, and the failing neuron (layer 1
+  neuron 10) was correct on all 2^19 values of its hidden inputs. Yet the proof refuted
+  it, and the eval turned any refutation into "not equivalent", which fails the gate. A
+  concurrently trained digits network (branch feat/trained-digits-benchmark) is refuted
+  the same way at k=4 (layer 0 neuron 60), so no trained case at k=4 could be added.
+- Cause: the proof replaces counters by their output bits and then checked the comparator
+  over those bits as free variables, including values a counter never produces (a 6:3
+  counter never outputs 7). The comparator chain tracks the heap's exact range (PR #20)
+  and may differ from the threshold there. It shows with inverted shared counters and
+  skewed thresholds, which trained networks have and the random benchmark networks
+  (centred thresholds) never did.
+- Fix: the comparator is compared with the threshold only where every replaced counter
+  group's outputs lie in the group's image (all output tuples over all rows of its
+  inputs), which contains every value the circuit can produce, so the proof stays sound.
+  The eval now counts a refutation as a wrong circuit only with a counterexample that
+  simulation confirms; otherwise the case is "not proven", which still fails the gate when
+  the base proved it.
+- Result: circuits unchanged (18,034 LUTs, worst depth 15), all six cases proven, proof
+  time 2.2 s -> 2.7 s. Both trained networks are now proven at k=4 and k=6 (the one trained here:
+  915 LUTs / depth 11 at k=6, 1,958 / 16 at k=4, against 1,105 / 11 for the random
+  mlp-64-s70 of the same shape). Tests: a hand-built counter plus comparator that relies
+  on the range (proven), one wrong on a possible count (refuted), and a compiled 13-input
+  layer at k=4 that the old proof refuted.
+- Not kept, measured this run:
+  - Timing-driven counter groups (sort each column by arrival level before cutting it into
+    counters): -6 LUTs, k=4 only. A layer's outputs arrive within 1-2 levels of each other,
+    and mostly on purpose (the critical-path pass delays neurons with slack).
+  - Restarting the shared-group matching from 10 random orders of neurons and inputs
+    (mlp-256-s70 layer 1): 8,040-8,106 covered literal slots, against 8,130 for the fixed
+    order. Coverage per layer today: mlp-256-s70 83% / 66% / 19%, mlp-64-s70 44% / 37%,
+    mlp-256-s90 6% (plus 12% in 5-literal groups), mlp-256-s95 0%, k=4 case 60% / 33%, so the
+    90-95%-sparse cases depend on the per-neuron trees.
+  - Two-level structures for small central thresholds at k=6: three LUTs each reading 6 of
+    7 inputs plus an output LUT reading them and 3 more inputs, or four LUTs reading 6 of 8
+    plus 2 more inputs, cannot compute a 10-input threshold (SAT, CaDiCaL: unsatisfiable for
+    every layout tried), so 6 LUTs stands. Per-neuron costs today (central threshold, k=6,
+    cheapest): 7-8 inputs 3 LUTs, 9: 4, 10: 6, 12: 7, 13: 8, 16: 9, 19: 14, 26: 20, 40: 35,
+    77: 69; at k=4, 26 inputs take 39 and 77 take 139. Exact synthesis of small symmetric
+    cones looks unpromising.
+  - The trained digits case itself is left to the concurrent branch, which trained a
+    better network (87% test accuracy against 80% here) under the same file name.
+
 ## 2026-11-12 - comparator chain planned as a whole, with partial-column steps
 
 - Why: the counters are at their information limit for value-preserving compression (a 6:3

@@ -4,7 +4,9 @@ Correctness: the simulated netlist must agree with the reference network on
 every input vector. Small networks (<= EXHAUSTIVE_MAX_INPUTS inputs) are checked
 exhaustively, larger ones on random samples. Every circuit is also proven equivalent
 for all inputs with BDDs (see prove.py), time-boxed; `proven` reports whether it was.
-A proof that finds a real counterexample makes the circuit not equivalent.
+A proof that finds a counterexample which simulation confirms makes the circuit not
+equivalent. A failed proof without one (a difference the proof could only find on values
+that may never occur) leaves the circuit unproven, not wrong.
 
 Quality, for a correct circuit:
   * lut_count       - area (lower is better),
@@ -95,9 +97,13 @@ def evaluate(
     baseline = compile_network(network, k=k, prune_zeros=False)
     eq = check_equivalence(network, netlist, num_samples=num_samples, seed=seed)
     proof = prove_equivalence(network, netlist, time_box=proof_time_box)
+    wrong = False
+    if proof.counterexample is not None:
+        cex = np.array([proof.counterexample], dtype=np.uint8)
+        wrong = bool((simulate(netlist, cex) != network.forward(cex)).any())
     base_count = baseline.lut_count()
     return EvalResult(
-        equivalent=eq.equivalent and not proof.refuted,
+        equivalent=eq.equivalent and not wrong,
         exhaustive=eq.exhaustive,
         vectors_checked=eq.vectors_checked,
         proven=proof.proven,
